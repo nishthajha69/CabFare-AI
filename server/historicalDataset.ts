@@ -8,9 +8,15 @@ import {
   PredictionPoint,
   VehicleCategory,
 } from '../src/types/cabfare.ts';
-import { PLATFORM_FARE_MODELS, PlatformFareModel, VehicleFareTariff } from './fareModels.ts';
+import {
+  getSupportedPlatformsForCityName,
+  PLATFORM_FARE_MODELS,
+  PlatformFareModel,
+  VehicleFareTariff,
+} from './fareModels.ts';
 
 interface CorridorSeed {
+  city: string;
   pickupLocation: string;
   destination: string;
   distanceKm: number;
@@ -21,6 +27,7 @@ interface CorridorSeed {
 
 const CORRIDOR_SEEDS: CorridorSeed[] = [
   {
+    city: 'Bengaluru',
     pickupLocation: 'Indiranagar 100 Feet Road',
     destination: 'Kempegowda International Airport (BLR)',
     distanceKm: 35.2,
@@ -29,6 +36,7 @@ const CORRIDOR_SEEDS: CorridorSeed[] = [
     isTechPark: false,
   },
   {
+    city: 'Bengaluru',
     pickupLocation: 'Koramangala 4th Block (Sony Signal)',
     destination: 'Electronic City Phase 1',
     distanceKm: 14.4,
@@ -37,6 +45,7 @@ const CORRIDOR_SEEDS: CorridorSeed[] = [
     isTechPark: true,
   },
   {
+    city: 'Bengaluru',
     pickupLocation: 'Koramangala 4th Block (Sony Signal)',
     destination: 'MG Road Metro Station',
     distanceKm: 7.1,
@@ -45,6 +54,7 @@ const CORRIDOR_SEEDS: CorridorSeed[] = [
     isTechPark: false,
   },
   {
+    city: 'Bengaluru',
     pickupLocation: 'Indiranagar 100 Feet Road',
     destination: 'Whitefield ITPL Main Gate',
     distanceKm: 13.2,
@@ -53,6 +63,7 @@ const CORRIDOR_SEEDS: CorridorSeed[] = [
     isTechPark: true,
   },
   {
+    city: 'Delhi NCR',
     pickupLocation: 'Connaught Place (Rajiv Chowk)',
     destination: 'DLF Cyber Hub',
     distanceKm: 23.5,
@@ -61,6 +72,7 @@ const CORRIDOR_SEEDS: CorridorSeed[] = [
     isTechPark: true,
   },
   {
+    city: 'Mumbai',
     pickupLocation: 'Hiranandani Gardens, Powai',
     destination: 'Bandra Kurla Complex (BKC)',
     distanceKm: 12.6,
@@ -201,8 +213,10 @@ export function getSyntheticHistoricalDataset(): HistoricalFareRecord[] {
 
   dates.forEach((d, dayIdx) => {
     CORRIDOR_SEEDS.forEach((corridor, corridorIdx) => {
+      const supportedSet = new Set(getSupportedPlatformsForCityName(corridor.city));
+      const corridorModels = PLATFORM_FARE_MODELS.filter((m) => supportedSet.has(m.platformId));
       TIME_SLOTS.forEach((slot) => {
-        PLATFORM_FARE_MODELS.forEach((model) => {
+        corridorModels.forEach((model) => {
           model.vehicles.forEach((tariff) => {
             const calc = computeHistoricalRecordFare(
               corridor,
@@ -401,6 +415,8 @@ export function queryAnalyticsDataset(filters: Partial<AnalyticsFilters> = {}): 
       rapido: avg('rapido'),
       blusmart: avg('blusmart'),
       namma_yatri: avg('namma_yatri'),
+      meru: avg('meru'),
+      goamiles: avg('goamiles'),
     };
   }).filter((row) => row.averageFare > 0);
 
@@ -424,6 +440,8 @@ export function queryAnalyticsDataset(filters: Partial<AnalyticsFilters> = {}): 
         rapido: avg('rapido'),
         blusmart: avg('blusmart'),
         namma_yatri: avg('namma_yatri'),
+        meru: avg('meru'),
+        goamiles: avg('goamiles'),
       };
     })
     .filter((v): v is NonNullable<typeof v> => v !== null);
@@ -479,6 +497,24 @@ export function analyzeHistoricalForecast(
   currentDemandFactor: number,
   baseHour: number
 ): { farePredictions: PredictionPoint[]; predictionMeta: PredictionMeta } {
+  if (!Number.isFinite(currentAvgCabFare) || currentAvgCabFare <= 0) {
+    return {
+      farePredictions: [],
+      predictionMeta: {
+        direction: 'stable',
+        directionLabel: 'Unavailable for Location',
+        confidencePercent: 0,
+        confidenceLabel: 'Unavailable (Unsupported Region)',
+        historicalAvgFare: 0,
+        basisSummary: `No supported app-based cab providers operate for ${pickup.city || pickup.area} → ${drop.city || drop.area}.`,
+        limitations: [
+          'App-based aggregators do not have active coverage in this region.',
+          'Local prepaid taxi counters or regulated regional stands may still operate offline.',
+        ],
+        disclaimer: 'Forecasts are unavailable where no supported cab aggregators operate.',
+      },
+    };
+  }
   const dataset = getSyntheticHistoricalDataset();
 
   // Prefer synthetic records matching this exact corridor if available; else use all 4-wheeler cab benchmarks

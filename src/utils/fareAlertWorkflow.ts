@@ -20,6 +20,8 @@ export const PLATFORM_LABELS: Record<'any' | PlatformId, string> = {
   rapido: 'Rapido',
   blusmart: 'BluSmart',
   namma_yatri: 'Namma Yatri',
+  meru: 'Meru Cabs',
+  goamiles: 'GoaMiles',
 };
 
 export const VEHICLE_CATEGORY_LABELS: Record<'any' | VehicleCategory, string> = {
@@ -287,6 +289,10 @@ export function normalizeLegacyAlert(
     blusmart: 'blusmart',
     namma_yatri: 'namma_yatri',
     'namma yatri': 'namma_yatri',
+    meru: 'meru',
+    'meru cabs': 'meru',
+    goamiles: 'goamiles',
+    'goa miles': 'goamiles',
   };
   const preferredPlatform = platformMap[rawPlat] ?? 'any';
 

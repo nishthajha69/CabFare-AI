@@ -1,5 +1,5 @@
-import { AlertCircle, Info, TrendingDown, TrendingUp } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { AlertCircle, Check, Download, Info, TrendingDown, TrendingUp } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Area,
   AreaChart,
@@ -22,6 +22,7 @@ import {
   HistoricalPoint,
   PredictionMeta,
   PredictionPoint,
+  SupportedPlatformInfo,
 } from '../types/cabfare';
 
 interface TrendsAndPredictionsProps {
@@ -29,6 +30,8 @@ interface TrendsAndPredictionsProps {
   history7d: DailyTrendPoint[];
   predictions: PredictionPoint[];
   predictionMeta: PredictionMeta;
+  supportedPlatforms?: SupportedPlatformInfo[];
+  cityName?: string;
   routeLabel: string;
   pickupName: string;
   dropName: string;
@@ -40,6 +43,8 @@ const SERIES_CONFIG = [
   { key: 'rapido', name: 'Rapido', color: '#0284C7' },
   { key: 'blusmart', name: 'BluSmart', color: '#16A34A' },
   { key: 'namma_yatri', name: 'Namma Yatri', color: '#10B981' },
+  { key: 'meru', name: 'Meru Cabs', color: '#0E7490' },
+  { key: 'goamiles', name: 'GoaMiles', color: '#0D9488' },
 ] as const;
 
 const PERIOD_COLORS: Record<'Peak' | 'Moderate' | 'Off-Peak', string> = {
@@ -48,11 +53,26 @@ const PERIOD_COLORS: Record<'Peak' | 'Moderate' | 'Off-Peak', string> = {
   'Off-Peak': '#16A34A',
 };
 
+function escapeCsvCell(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+  if (/[",\n\r]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function buildCsvRow(cells: Array<string | number | null | undefined>): string {
+  return cells.map(escapeCsvCell).join(',');
+}
+
 export function TrendsAndPredictions({
   history24h,
   history7d,
   predictions,
   predictionMeta,
+  supportedPlatforms,
+  cityName,
   routeLabel,
   pickupName,
   dropName,
@@ -65,9 +85,12 @@ export function TrendsAndPredictions({
     rapido: true,
     blusmart: true,
     namma_yatri: true,
+    meru: true,
+    goamiles: true,
   });
   const [showAvgOverlay, setShowAvgOverlay] = useState<boolean>(true);
   const [syntheticAnalytics, setSyntheticAnalytics] = useState<AnalyticsSummaryResponse | null>(null);
+  const [csvDownloaded, setCsvDownloaded] = useState<boolean>(false);
 
   useEffect(() => {
     let active = true;
@@ -77,7 +100,7 @@ export function TrendsAndPredictions({
         if (res.filteredRecordCount > 0) {
           setSyntheticAnalytics(res);
         } else {
-          // If custom route isn't one of the 6 seeded corridors, load overall synthetic cab patterns
+          // If custom route isn't one of the seeded corridors, load overall synthetic cab patterns
           return fetchAnalyticsData({ vehicleCategory: 'hatchback' }).then((fallbackRes) => {
             if (active) setSyntheticAnalytics(fallbackRes);
           });
@@ -102,9 +125,15 @@ export function TrendsAndPredictions({
     .map((m) => predictions.find((p) => p.minutesAhead === m))
     .filter((p): p is PredictionPoint => Boolean(p));
 
-  const chartData =
-    dataSourceScope === 'synthetic' && syntheticAnalytics
-      ? timeframe === '24h'
+  const chartData = useMemo(() => {
+    const computeAvg = (vals: Array<number | null | undefined>): number => {
+      const nums = vals.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+      if (nums.length === 0) return 0;
+      return Math.round(nums.reduce((sum, v) => sum + v, 0) / nums.length);
+    };
+
+    if (dataSourceScope === 'synthetic' && syntheticAnalytics) {
+      return timeframe === '24h'
         ? syntheticAnalytics.hourlyPatterns.map((d) => ({
             label: d.timeLabel,
             uber: d.uber ?? undefined,
@@ -112,6 +141,8 @@ export function TrendsAndPredictions({
             rapido: d.rapido ?? undefined,
             blusmart: d.blusmart ?? undefined,
             namma_yatri: d.namma_yatri ?? undefined,
+            meru: d.meru ?? undefined,
+            goamiles: d.goamiles ?? undefined,
             averageFare: d.averageFare,
           }))
         : syntheticAnalytics.dailyTrend.map((d) => ({
@@ -121,27 +152,118 @@ export function TrendsAndPredictions({
             rapido: d.rapido ?? undefined,
             blusmart: d.blusmart ?? undefined,
             namma_yatri: d.namma_yatri ?? undefined,
-            averageFare: d.averageFare,
-          }))
-      : timeframe === '24h'
-        ? history24h.map((d) => ({
-            label: d.timeLabel,
-            uber: d.uber,
-            ola: d.ola,
-            rapido: d.rapido,
-            blusmart: d.blusmart,
-            namma_yatri: d.namma_yatri,
-            averageFare: Math.round((d.uber + d.ola + d.rapido + d.blusmart + d.namma_yatri) / 5),
-          }))
-        : history7d.map((d) => ({
-            label: d.dayLabel,
-            uber: d.uber,
-            ola: d.ola,
-            rapido: d.rapido,
-            blusmart: d.blusmart,
-            namma_yatri: d.namma_yatri,
+            meru: d.meru ?? undefined,
+            goamiles: d.goamiles ?? undefined,
             averageFare: d.averageFare,
           }));
+    }
+
+    return timeframe === '24h'
+      ? history24h.map((d) => ({
+          label: d.timeLabel,
+          uber: d.uber ?? undefined,
+          ola: d.ola ?? undefined,
+          rapido: d.rapido ?? undefined,
+          blusmart: d.blusmart ?? undefined,
+          namma_yatri: d.namma_yatri ?? undefined,
+          meru: d.meru ?? undefined,
+          goamiles: d.goamiles ?? undefined,
+          averageFare: computeAvg([d.uber, d.ola, d.rapido, d.blusmart, d.namma_yatri, d.meru, d.goamiles]),
+        }))
+      : history7d.map((d) => ({
+          label: d.dayLabel,
+          uber: d.uber ?? undefined,
+          ola: d.ola ?? undefined,
+          rapido: d.rapido ?? undefined,
+          blusmart: d.blusmart ?? undefined,
+          namma_yatri: d.namma_yatri ?? undefined,
+          meru: d.meru ?? undefined,
+          goamiles: d.goamiles ?? undefined,
+          averageFare: d.averageFare,
+        }));
+  }, [dataSourceScope, syntheticAnalytics, timeframe, history24h, history7d]);
+
+  const activeSeriesConfig = useMemo(() => {
+    const hasNumericData = (key: string) =>
+      chartData.some((row) => typeof row[key as keyof typeof row] === 'number');
+
+    if (dataSourceScope === 'route' && supportedPlatforms && supportedPlatforms.length > 0) {
+      const supportedSet = new Set(supportedPlatforms.map((p) => p.id));
+      return SERIES_CONFIG.filter((s) => supportedSet.has(s.key) || hasNumericData(s.key));
+    }
+
+    const withData = SERIES_CONFIG.filter((s) => hasNumericData(s.key));
+    return withData.length > 0
+      ? withData
+      : SERIES_CONFIG.filter((s) => s.key !== 'namma_yatri');
+  }, [dataSourceScope, supportedPlatforms, chartData]);
+
+  const handleDownloadCsv = () => {
+    if (chartData.length === 0) return;
+
+    const lines: string[] = [];
+    lines.push(buildCsvRow(['CabFare AI - Fare History & Prediction Export (Estimated / Synthetic Data)']));
+    lines.push(buildCsvRow(['Exported At', new Date().toISOString()]));
+    lines.push(buildCsvRow(['City', cityName ?? 'Selected Route City']));
+    lines.push(buildCsvRow(['Route', `${pickupName} -> ${dropName}`]));
+    lines.push(buildCsvRow(['Dataset Scope', dataSourceScope === 'route' ? 'Active Route Modeled Curve' : 'Synthetic Historical Dataset']));
+    lines.push(buildCsvRow(['Timeframe', timeframe === '24h' ? 'Hourly Fare Changes (24h)' : '7-Day Daily Averages']));
+    lines.push('');
+
+    lines.push(
+      buildCsvRow([
+        timeframe === '24h' ? 'Time Slot' : 'Day',
+        ...activeSeriesConfig.map((s) => `${s.name} (INR)`),
+        'Historical Average (INR)',
+      ])
+    );
+
+    for (const row of chartData) {
+      lines.push(
+        buildCsvRow([
+          row.label,
+          ...activeSeriesConfig.map((s) => {
+            const val = row[s.key as keyof typeof row];
+            return typeof val === 'number' ? val : '';
+          }),
+          row.averageFare,
+        ])
+      );
+    }
+
+    if (predictions.length > 0) {
+      lines.push('');
+      lines.push(buildCsvRow(['Short-Horizon Fare Trend Forecast (Estimated)']));
+      lines.push(buildCsvRow(['Horizon', 'Expected Fare (INR)', 'Low Estimate (INR)', 'High Estimate (INR)', 'Surge Probability (%)', 'Direction']));
+      for (const p of predictions) {
+        lines.push(
+          buildCsvRow([
+            p.offsetLabel,
+            p.expectedFare,
+            p.lowEstimate,
+            p.highEstimate,
+            p.surgeProbability,
+            p.trendDirection,
+          ])
+        );
+      }
+    }
+
+    const csvContent = `\uFEFF${lines.join('\r\n')}`;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const safeCity = (cityName ?? 'route').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `cabfare-history-${safeCity}-${timeframe}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+
+    setCsvDownloaded(true);
+    window.setTimeout(() => setCsvDownloaded(false), 2500);
+  };
 
   const directionBadgeClasses =
     predictionMeta.direction === 'decrease'
@@ -198,6 +320,12 @@ export function TrendsAndPredictions({
         </div>
 
         {/* Highlight cards for +10m, +20m, +30m */}
+        {predictions.length === 0 ? (
+          <div className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50/70 p-6 text-center text-xs text-slate-600">
+            Short-horizon fare predictions are unavailable because no supported app-based cab providers operate in this region.
+          </div>
+        ) : (
+        <>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
           {horizonHighlights.map((pt) => {
             const label =
@@ -344,6 +472,8 @@ export function TrendsAndPredictions({
             </table>
           </div>
         </div>
+        </>
+        )}
 
         {/* Limitations & Non-Guarantee Disclosure */}
         <div className="mt-5 rounded-lg border border-amber-200/80 bg-amber-50/50 p-3.5 text-xs text-amber-950">
@@ -428,12 +558,31 @@ export function TrendsAndPredictions({
                 7-Day Averages
               </button>
             </div>
+
+            <button
+              type="button"
+              onClick={handleDownloadCsv}
+              disabled={chartData.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 transition-colors hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50 whitespace-nowrap"
+            >
+              {csvDownloaded ? (
+                <>
+                  <Check className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                  <span className="text-emerald-700">CSV Downloaded</span>
+                </>
+              ) : (
+                <>
+                  <Download className="h-3.5 w-3.5 text-blue-600" aria-hidden="true" />
+                  <span>Download CSV</span>
+                </>
+              )}
+            </button>
           </div>
         </div>
 
         {/* Platform Filter Toggles + Historical Average Toggle */}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          {SERIES_CONFIG.map((s) => {
+          {activeSeriesConfig.map((s) => {
             const active = enabledPlatforms[s.key];
             return (
               <button
@@ -473,6 +622,11 @@ export function TrendsAndPredictions({
         </div>
 
         <div className="mt-4 h-[310px]">
+          {chartData.length === 0 ? (
+            <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50/60 p-6 text-center text-xs text-slate-600">
+              No provider price history curve is available for this location because no app-based aggregators operate here. Switch to Synthetic Dataset above to inspect reference metro patterns.
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false} />
@@ -497,7 +651,7 @@ export function TrendsAndPredictions({
                 }}
               />
               <Legend wrapperStyle={{ fontSize: '12px' }} />
-              {SERIES_CONFIG.map(
+              {activeSeriesConfig.map(
                 (s) =>
                   enabledPlatforms[s.key] && (
                     <Line
@@ -526,6 +680,7 @@ export function TrendsAndPredictions({
               )}
             </LineChart>
           </ResponsiveContainer>
+          )}
         </div>
       </section>
 

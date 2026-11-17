@@ -1,8 +1,22 @@
-export type PlatformId = 'uber' | 'ola' | 'rapido' | 'blusmart' | 'namma_yatri';
+export type PlatformId =
+  | 'uber'
+  | 'ola'
+  | 'rapido'
+  | 'blusmart'
+  | 'namma_yatri'
+  | 'meru'
+  | 'goamiles';
 
 export type VehicleCategory = 'bike' | 'auto' | 'hatchback' | 'sedan' | 'suv' | 'ev';
 
-export type ZoneType = 'commercial' | 'airport' | 'metro' | 'residential' | 'tech-park';
+export type ZoneType =
+  | 'commercial'
+  | 'airport'
+  | 'railway'
+  | 'metro'
+  | 'residential'
+  | 'tech-park'
+  | 'landmark';
 
 export type ScenarioMode = 'live' | 'morning_peak' | 'evening_surge' | 'off_peak';
 
@@ -14,14 +28,42 @@ export interface SurgeAssumptions {
   trafficCongestionFactor?: number;
 }
 
+export interface CustomPlatformRateOverride {
+  baseFare?: number;
+  perKmRate?: number;
+  perMinRate?: number;
+}
+
+export type CustomPlatformRatesMap = Partial<Record<PlatformId, CustomPlatformRateOverride>>;
+
+export interface SupportedPlatformInfo {
+  id: PlatformId;
+  name: string;
+  confirmedForCity: boolean;
+  pricingModel: string;
+  notes: string;
+}
+
+export interface CityProviderContext {
+  cityKey: string;
+  cityName: string;
+  state?: string;
+  isConfirmedCity: boolean;
+  serviceStatus: 'supported' | 'limited' | 'unsupported';
+  supportedPlatforms: PlatformId[];
+  note: string;
+}
+
 export interface LocationPoint {
   id: string;
   name: string;
   area: string;
   city: string;
+  state?: string;
   lat: number;
   lng: number;
   zoneType: ZoneType;
+  tier?: 'metro' | 'tier2' | 'tier3' | 'regional' | 'unsupported';
 }
 
 export interface RoutePreset {
@@ -30,6 +72,56 @@ export interface RoutePreset {
   city: string;
   pickup: LocationPoint;
   drop: LocationPoint;
+}
+
+export interface DriverProfileInfo {
+  isDriverAssigned: boolean;
+  dataSource: 'authorized_provider_api' | 'unavailable_pre_booking';
+  statusMessage: string;
+  driverName: string | null;
+  driverPhotoUrl: string | null;
+  driverGender: 'female' | 'male' | 'non_binary' | null;
+  driverGenderSource: 'authorized_provider_api' | 'unavailable';
+  driverRating: number | null;
+  completedRides: number | null;
+  verifiedExperienceYears: number | null;
+  vehicleModel: string | null;
+  vehicleRegistrationNumber: string | null;
+  verificationStatus: 'verified_by_provider' | 'unverified_pending_booking';
+  verificationLabel: string;
+}
+
+export interface ProviderSafetyCapabilities {
+  hasSOSButtonInApp: boolean;
+  hasLiveTrackingPostBooking: boolean;
+  hasRidePinVerification: boolean;
+  hasShareTripLink: boolean;
+  has24x7SafetyHelpline: boolean;
+  supportsFemaleDriverPreference: boolean;
+  safetyInfoScore: number;
+  safetyInfoLevel: 'Comprehensive Platform Tools' | 'Standard Platform Tools' | 'Basic / Union Counter';
+  documentedSafetyFeatures: string[];
+  trackingAvailabilityLabel: string;
+  safetyCaveat: string;
+}
+
+export interface EmergencyContact {
+  id: string;
+  name: string;
+  relationship: string;
+  phone: string;
+  isPrimary?: boolean;
+}
+
+export interface SosDispatchLog {
+  id: string;
+  triggeredAt: string;
+  routeLabel: string;
+  lat?: number;
+  lng?: number;
+  channel: 'emergency_dial' | 'contact_share' | 'live_share';
+  recipientsCount: number;
+  note: string;
 }
 
 export interface FareEstimate {
@@ -58,33 +150,54 @@ export interface FareEstimate {
   journeyMinutes: number;
   availabilityStatus: string;
   availabilitySource: 'simulated';
+  fareQuoteType: 'estimated' | 'verified_live';
+  bookingUrl: string;
   reliabilityScore: number;
   cancellationRisk: 'Low' | 'Moderate' | 'High';
   isCheapest: boolean;
   isCheapestInCategory: boolean;
   pricingModel: string;
   notes: string;
+  driverProfile: DriverProfileInfo;
+  safetyCapabilities: ProviderSafetyCapabilities;
+}
+
+export interface RideRecommendationHighlight {
+  type:
+    | 'cheapest'
+    | 'fastest'
+    | 'best_value'
+    | 'best_rated_driver'
+    | 'best_safety_info'
+    | 'best_overall';
+  title: string;
+  reason: string;
+  estimate: FareEstimate | null;
 }
 
 export interface HistoricalPoint {
   timeLabel: string;
   hour: number;
-  uber: number;
-  ola: number;
-  rapido: number;
-  blusmart: number;
-  namma_yatri: number;
+  uber: number | null;
+  ola: number | null;
+  rapido: number | null;
+  blusmart: number | null;
+  namma_yatri: number | null;
+  meru: number | null;
+  goamiles: number | null;
   demandIndex: number;
 }
 
 export interface DailyTrendPoint {
   dayLabel: string;
   averageFare: number;
-  uber: number;
-  ola: number;
-  rapido: number;
-  blusmart: number;
-  namma_yatri: number;
+  uber: number | null;
+  ola: number | null;
+  rapido: number | null;
+  blusmart: number | null;
+  namma_yatri: number | null;
+  meru: number | null;
+  goamiles: number | null;
 }
 
 export interface PredictionPoint {
@@ -117,6 +230,7 @@ export interface FareSummary {
   cheapestVehicleType: string;
   cheapestFare: number;
   cheapestCabPlatform: string;
+  cheapestCabVehicleType: string;
   cheapestCabFare: number;
   averageFare: number;
   highestPlatform: string;
@@ -216,6 +330,8 @@ export interface AnalyticsSummaryResponse {
     rapido: number | null;
     blusmart: number | null;
     namma_yatri: number | null;
+    meru?: number | null;
+    goamiles?: number | null;
   }>;
   dailyTrend: Array<{
     date: string;
@@ -226,6 +342,8 @@ export interface AnalyticsSummaryResponse {
     rapido: number | null;
     blusmart: number | null;
     namma_yatri: number | null;
+    meru?: number | null;
+    goamiles?: number | null;
   }>;
   sampleRecords: HistoricalFareRecord[];
 }
@@ -253,7 +371,17 @@ export interface FareComparisonResponse {
   };
   fares: FareEstimate[];
   platformBenchmarks: FareEstimate[];
-  supportedCategoriesByPlatform: Record<PlatformId, VehicleCategory[]>;
+  supportedPlatforms: SupportedPlatformInfo[];
+  cityProviderContext: CityProviderContext;
+  supportedCategoriesByPlatform: Partial<Record<PlatformId, VehicleCategory[]>>;
+  rideRecommendations: {
+    cheapest: RideRecommendationHighlight | null;
+    fastest: RideRecommendationHighlight | null;
+    bestValue: RideRecommendationHighlight | null;
+    bestRatedDriver: RideRecommendationHighlight | null;
+    bestSafetyInfo: RideRecommendationHighlight | null;
+    bestOverall: RideRecommendationHighlight | null;
+  };
   summary: FareSummary;
   priceHistory24h: HistoricalPoint[];
   priceHistory7d: DailyTrendPoint[];
@@ -261,6 +389,7 @@ export interface FareComparisonResponse {
   predictionMeta: PredictionMeta;
   alternativePickups: AlternativePickup[];
   simulatedNotice: string;
+  routeWarning?: string;
 }
 
 export type AIActionType =

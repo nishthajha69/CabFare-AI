@@ -1,5 +1,6 @@
 import { RefreshCw, TrendingDown } from 'lucide-react';
-import { AIActionType, AIRecommendation } from '../types/cabfare';
+import { AIActionType, AIRecommendation, PlatformId } from '../types/cabfare';
+import { ProviderLogo } from './ProviderLogo';
 
 interface AIRecommendationCardProps {
   recommendation: AIRecommendation | null;
@@ -7,6 +8,18 @@ interface AIRecommendationCardProps {
   error: string | null;
   onRefresh: () => void;
   onAskAssistant?: () => void;
+}
+
+function resolvePlatformId(nameOrId?: string): PlatformId | null {
+  const s = (nameOrId ?? '').toLowerCase();
+  if (s.includes('uber')) return 'uber';
+  if (s.includes('ola')) return 'ola';
+  if (s.includes('rapido')) return 'rapido';
+  if (s.includes('blu')) return 'blusmart';
+  if (s.includes('namma')) return 'namma_yatri';
+  if (s.includes('meru')) return 'meru';
+  if (s.includes('goamiles') || s.includes('goa')) return 'goamiles';
+  return null;
 }
 
 function getActionAccent(action: AIActionType): {
@@ -51,6 +64,10 @@ export function AIRecommendationCard({
   onRefresh,
   onAskAssistant,
 }: AIRecommendationCardProps) {
+  const matchedPlatformId = resolvePlatformId(
+    recommendation?.recommendedPlatform || recommendation?.recommendedVehicle
+  );
+
   return (
     <section
       aria-label="AI Ride Recommendation"
@@ -97,7 +114,7 @@ export function AIRecommendationCard({
               const style = getActionAccent(recommendation.action);
               return (
                 <div className={`rounded-lg border p-3.5 ${style.bannerBg} ${style.borderColor}`}>
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <span className="block text-xs font-medium text-slate-600">
                         Recommended Action
@@ -106,13 +123,25 @@ export function AIRecommendationCard({
                         {recommendation.action}
                       </span>
                     </div>
-                    <div className="text-right font-mono tabular-nums">
-                      <span className="block text-xs text-slate-600">
-                        {recommendation.recommendedVehicle || recommendation.recommendedPlatform}
-                      </span>
-                      <span className="text-lg font-bold text-slate-900">
-                        ₹{recommendation.estimatedFare}
-                      </span>
+                    <div className="flex items-center gap-2.5 text-right font-mono tabular-nums">
+                      {matchedPlatformId && (
+                        <ProviderLogo platformId={matchedPlatformId} size="sm" />
+                      )}
+                      <div>
+                        <span className="block font-sans text-xs font-semibold text-slate-800">
+                          {recommendation.recommendedVehicle || recommendation.recommendedPlatform}
+                        </span>
+                        <span className="text-lg font-bold text-slate-900">
+                          {recommendation.estimatedFare > 0
+                            ? `₹${recommendation.estimatedFare}`
+                            : 'Unavailable'}
+                        </span>
+                        {recommendation.estimatedFare > 0 && (
+                          <span className="ml-1 font-sans text-[10px] font-medium text-slate-500">
+                            (Est.)
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>

@@ -31,6 +31,8 @@ const PROVIDER_COLORS: Record<string, string> = {
   rapido: '#0284C7',
   blusmart: '#16A34A',
   namma_yatri: '#059669',
+  meru: '#0E7490',
+  goamiles: '#0D9488',
 };
 
 const PERIOD_COLORS: Record<'Peak' | 'Moderate' | 'Off-Peak', string> = {

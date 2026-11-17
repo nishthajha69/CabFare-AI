@@ -1,5 +1,6 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { ExternalLink } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { AlternativePickup, LocationPoint } from '../types/cabfare';
 
@@ -167,11 +168,11 @@ export function RouteMap({
             Interactive Route Map
           </h2>
           <p className="text-xs text-slate-500">
-            {pickup.area} to {drop.area} ·{' '}
+            {pickup.area} ({pickup.city}{pickup.state ? `, ${pickup.state}` : ''}) to {drop.area} ({drop.city}) ·{' '}
             {distanceSource === 'osrm-road-network' ? 'Actual Road Route' : 'Estimated Road Path'}
           </p>
         </div>
-        <div className="flex items-center gap-3 text-xs text-slate-600 tabular-nums font-mono">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 tabular-nums font-mono">
           <span>{distanceKm} km</span>
           <span aria-hidden="true" className="text-slate-300">·</span>
           <span>{estimatedDurationMin} min</span>
@@ -179,6 +180,15 @@ export function RouteMap({
           <span className={TRAFFIC_STYLES[trafficLevel].textClass}>
             {trafficLevel} Traffic
           </span>
+          <a
+            href={`https://www.google.com/maps/dir/?api=1&origin=${pickup.lat},${pickup.lng}&destination=${drop.lat},${drop.lng}&travelmode=driving`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-sans text-[11px] font-semibold text-blue-700 hover:bg-blue-50 whitespace-nowrap"
+          >
+            <span>Open in Google Maps</span>
+            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+          </a>
         </div>
       </div>
 

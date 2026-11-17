@@ -75,7 +75,7 @@ export function WaitingTimeAnalysis({
         platformBenchmarks.reduce((acc, f) => acc + f.estimatedFare, 0) / platformBenchmarks.length
       );
     }
-    return fares[0]?.estimatedFare ?? 200;
+    return fares[0]?.estimatedFare ?? 0;
   }, [summary, platformBenchmarks, fares]);
 
   const selectedOption: FareEstimate | null = useMemo(() => {
@@ -316,6 +316,22 @@ export function WaitingTimeAnalysis({
           };
 
   const selectedDelta = waitComparison.selectedWaitPoint.diffFromNow;
+
+  if (fares.length === 0) {
+    return (
+      <section
+        aria-label="Waiting-Time Cost Analysis"
+        className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6"
+      >
+        <h2 className="font-display text-lg font-bold text-slate-900">
+          Waiting-Time Cost Analysis
+        </h2>
+        <p className="mt-1.5 text-xs text-slate-600">
+          No fare estimates are currently available for this route to model waiting-time trade-offs.
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section

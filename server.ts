@@ -10,8 +10,10 @@ import {
   generateRideRecommendation,
 } from './server/geminiService.ts';
 import {
+  classifyZoneType,
   CURATED_LOCATIONS,
   findNearestHub,
+  isInsideIndia,
   ROUTE_PRESETS,
   searchLocalLocations,
 } from './server/locations.ts';
@@ -19,6 +21,7 @@ import { queryAnalyticsDataset } from './server/historicalDataset.ts';
 import {
   AIRecommendation,
   ChatMessage,
+  CustomPlatformRatesMap,
   FareComparisonResponse,
   LocationPoint,
   PlatformId,
@@ -56,7 +59,7 @@ async function startServer() {
     });
   });
 
-  // Location autocomplete (local curated hubs + optional Nominatim OpenStreetMap)
+  // Location autocomplete (PAN-India local curated hubs + Nominatim OSM + Photon fallback)
   app.get('/api/locations/search', async (req, res) => {
     const q = String(req.query.q ?? '').trim();
     const localMatches = searchLocalLocations(q);
@@ -65,12 +68,28 @@ async function startServer() {
       return res.json({ results: localMatches });
     }
 
+    const merged: LocationPoint[] = [...localMatches];
+    const pushUnique = (loc: LocationPoint) => {
+      if (
+        !merged.some(
+          (m) =>
+            m.name.toLowerCase() === loc.name.toLowerCase() ||
+            (Math.abs(m.lat - loc.lat) < 0.004 && Math.abs(m.lng - loc.lng) < 0.004)
+        )
+      ) {
+        merged.push(loc);
+      }
+    };
+
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2200);
-      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=4&countrycodes=in&q=${encodeURIComponent(q)}`;
+      const timeout = setTimeout(() => controller.abort(), 3200);
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&countrycodes=in&q=${encodeURIComponent(q)}`;
       const osmRes = await fetch(url, {
-        headers: { 'User-Agent': 'CabFare-AI-Academic-App/1.0' },
+        headers: {
+          'User-Agent': 'CabFare-AI-Academic-App/1.0',
+          'Accept-Language': 'en',
+        },
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -79,40 +98,115 @@ async function startServer() {
         const osmData = (await osmRes.json()) as Array<{
           place_id: number;
           display_name: string;
+          name?: string;
           lat: string;
           lon: string;
+          address?: {
+            suburb?: string;
+            neighbourhood?: string;
+            city_district?: string;
+            city?: string;
+            town?: string;
+            village?: string;
+            county?: string;
+            state_district?: string;
+            state?: string;
+            country?: string;
+          };
         }>;
 
-        const osmLocations: LocationPoint[] = osmData.map((item) => {
+        for (const item of osmData) {
           const parts = item.display_name.split(',').map((s) => s.trim());
-          return {
+          const addr = item.address;
+          const areaPart =
+            addr?.suburb ||
+            addr?.neighbourhood ||
+            addr?.city_district ||
+            parts[1] ||
+            parts[0] ||
+            'Area';
+          const cityPart =
+            addr?.city ||
+            addr?.town ||
+            addr?.village ||
+            addr?.state_district ||
+            addr?.county ||
+            parts[2] ||
+            parts[1] ||
+            'India';
+          const statePart = addr?.state || (parts.length >= 2 ? parts[parts.length - 2] : undefined);
+
+          pushUnique({
             id: `osm-${item.place_id}`,
-            name: parts.slice(0, 2).join(', '),
-            area: parts[2] || parts[1] || 'Metro Area',
-            city: parts[3] || parts[2] || 'India',
+            name: item.name || parts.slice(0, 2).join(', '),
+            area: areaPart,
+            city: cityPart,
+            state: statePart,
             lat: Number(item.lat),
             lng: Number(item.lon),
-            zoneType: item.display_name.toLowerCase().includes('airport')
-              ? 'airport'
-              : item.display_name.toLowerCase().includes('metro')
-                ? 'metro'
-                : 'commercial',
-          };
-        });
-
-        const merged = [...localMatches];
-        for (const loc of osmLocations) {
-          if (!merged.some((m) => m.name.toLowerCase() === loc.name.toLowerCase())) {
-            merged.push(loc);
-          }
+            zoneType: classifyZoneType(item.display_name),
+          });
         }
-        return res.json({ results: merged.slice(0, 8) });
       }
     } catch {
-      // Gracefully return local curated matches if Nominatim times out or is unreachable
+      // Fall through to Photon fallback
     }
 
-    return res.json({ results: localMatches });
+    // Secondary open geocoder for Indian addresses & Tier 2/3 landmarks when results are sparse
+    if (merged.length < 4) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2600);
+        const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(`${q}, India`)}&limit=5&lat=22.5937&lon=78.9629&lang=en`;
+        const photonRes = await fetch(photonUrl, { signal: controller.signal });
+        clearTimeout(timeout);
+
+        if (photonRes.ok) {
+          const pData = (await photonRes.json()) as {
+            features?: Array<{
+              geometry?: { coordinates?: [number, number] };
+              properties?: {
+                osm_id?: number;
+                name?: string;
+                street?: string;
+                district?: string;
+                locality?: string;
+                city?: string;
+                county?: string;
+                state?: string;
+                country?: string;
+              };
+            }>;
+          };
+
+          for (const feat of pData.features ?? []) {
+            const coords = feat.geometry?.coordinates;
+            const props = feat.properties;
+            if (!coords || !props) continue;
+            const [lon, lat] = coords;
+            if (!isInsideIndia(lat, lon)) continue;
+            const title = props.name || props.street || props.locality || props.city;
+            if (!title) continue;
+            const cityVal = props.city || props.county || props.state || 'India';
+            const areaVal = props.district || props.locality || props.street || cityVal;
+            pushUnique({
+              id: `photon-${props.osm_id ?? `${lat.toFixed(4)}-${lon.toFixed(4)}`}`,
+              name: props.district && props.name ? `${props.name}, ${props.district}` : title,
+              area: areaVal,
+              city: cityVal,
+              state: props.state,
+              lat,
+              lng: lon,
+              zoneType: classifyZoneType(`${title} ${areaVal}`),
+            });
+          }
+        }
+      } catch {
+        // Ignore Photon network timeout
+      }
+    }
+
+    return res.json({ results: merged.slice(0, 10) });
   });
 
   // Reverse geocode for browser geolocation
@@ -188,20 +282,16 @@ async function startServer() {
         }
 
         if (readableName) {
-          const lower = (data.display_name || readableName).toLowerCase();
           return res.json({
             location: {
               id: `gps-${Date.now()}`,
               name: readableName,
               area: localityPart || cityPart || 'Detected Location',
               city: cityPart || addr?.country || 'GPS',
+              state: addr?.state,
               lat,
               lng,
-              zoneType: lower.includes('airport')
-                ? 'airport'
-                : lower.includes('metro') || lower.includes('station')
-                  ? 'metro'
-                  : 'commercial',
+              zoneType: classifyZoneType(data.display_name || readableName),
             } satisfies LocationPoint,
           });
         }
@@ -235,9 +325,10 @@ async function startServer() {
               name: nameParts.join(', '),
               area: bdc.locality || bdc.city || 'Detected Location',
               city: bdc.city || bdc.principalSubdivision || bdc.countryName || 'GPS',
+              state: bdc.principalSubdivision,
               lat,
               lng,
-              zoneType: 'commercial',
+              zoneType: classifyZoneType(nameParts.join(' ')),
             } satisfies LocationPoint,
           });
         }
@@ -249,15 +340,16 @@ async function startServer() {
     return res.json({ location: findNearestHub(lat, lng) });
   });
 
-  // Compare fares across all 5 providers + history + predictions + alternative pickups
+  // Compare fares across supported city providers + history + predictions + alternative pickups
   app.post('/api/fares/compare', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    const { pickup, drop, scenario, surgeAssumptions, rideMode } = req.body as {
+    const { pickup, drop, scenario, surgeAssumptions, rideMode, customRates } = req.body as {
       pickup?: LocationPoint;
       drop?: LocationPoint;
       scenario?: ScenarioMode;
       surgeAssumptions?: SurgeAssumptions;
       rideMode?: RideMode;
+      customRates?: CustomPlatformRatesMap;
     };
 
     if (
@@ -282,7 +374,8 @@ async function startServer() {
         drop,
         scenario || 'live',
         surgeAssumptions,
-        normalizedRideMode
+        normalizedRideMode,
+        customRates
       );
       return res.json(result);
     } catch (err) {
@@ -319,7 +412,7 @@ async function startServer() {
       targetFare?: number;
     };
 
-    if (!comparison || !comparison.fares || comparison.fares.length === 0) {
+    if (!comparison || !comparison.route) {
       return res.status(400).json({ error: 'Fare comparison data is required for AI analysis.' });
     }
 

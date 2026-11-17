@@ -1,7 +1,25 @@
-import { ArrowUpDown, CalendarClock, Loader2, LocateFixed, MapPin, Navigation, Search, SlidersHorizontal, Zap } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import {
+  ArrowUpDown,
+  CalendarClock,
+  Loader2,
+  LocateFixed,
+  MapPin,
+  Navigation,
+  Search,
+  ShieldCheck,
+  SlidersHorizontal,
+  Zap,
+} from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { reverseGeocode, searchLocations } from '../services/api';
-import { LocationPoint, RideMode, RoutePreset, ScenarioMode, SurgeAssumptions } from '../types/cabfare';
+import {
+  LocationPoint,
+  RideMode,
+  RoutePreset,
+  ScenarioMode,
+  SurgeAssumptions,
+  ZoneType,
+} from '../types/cabfare';
 
 interface LocationSearchPanelProps {
   pickup: LocationPoint;
@@ -11,6 +29,8 @@ interface LocationSearchPanelProps {
   surgeAssumptions: SurgeAssumptions;
   presets: RoutePreset[];
   isLoading: boolean;
+  womenSafetyMode: boolean;
+  onToggleWomenSafetyMode: () => void;
   onChangePickup: (loc: LocationPoint) => void;
   onChangeDrop: (loc: LocationPoint) => void;
   onChangeScenario: (scenario: ScenarioMode) => void;
@@ -28,6 +48,14 @@ const SCENARIO_OPTIONS: { id: ScenarioMode; label: string }[] = [
   { id: 'off_peak', label: 'Off-Peak' },
 ];
 
+const ZONE_BADGES: Partial<Record<ZoneType, { label: string; classes: string }>> = {
+  airport: { label: 'Airport', classes: 'bg-sky-50 text-sky-700 border-sky-200' },
+  railway: { label: 'Railway Stn', classes: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  metro: { label: 'Metro', classes: 'bg-blue-50 text-blue-700 border-blue-200' },
+  landmark: { label: 'Landmark', classes: 'bg-amber-50 text-amber-800 border-amber-200' },
+  'tech-park': { label: 'Tech Park', classes: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+};
+
 function requestPosition(options: PositionOptions): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
     navigator.geolocation.getCurrentPosition(resolve, reject, options);
@@ -42,6 +70,8 @@ export function LocationSearchPanel({
   surgeAssumptions,
   presets,
   isLoading,
+  womenSafetyMode,
+  onToggleWomenSafetyMode,
   onChangePickup,
   onChangeDrop,
   onChangeScenario,
@@ -55,6 +85,8 @@ export function LocationSearchPanel({
   const [dropQuery, setDropQuery] = useState(drop.name);
   const [pickupSuggestions, setPickupSuggestions] = useState<LocationPoint[]>([]);
   const [dropSuggestions, setDropSuggestions] = useState<LocationPoint[]>([]);
+  const [isSearchingPickup, setIsSearchingPickup] = useState(false);
+  const [isSearchingDrop, setIsSearchingDrop] = useState(false);
   const [activeField, setActiveField] = useState<'pickup' | 'drop' | null>(null);
   const [locatingGps, setLocatingGps] = useState(false);
   const [geoStatusText, setGeoStatusText] = useState<string>('');
@@ -66,6 +98,7 @@ export function LocationSearchPanel({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pickupInputRef = useRef<HTMLInputElement>(null);
+  const autoDetectCheckedRef = useRef(false);
 
   useEffect(() => {
     setPickupQuery(pickup.name);
@@ -91,45 +124,65 @@ export function LocationSearchPanel({
 
   useEffect(() => {
     if (activeField !== 'pickup') return;
+    let active = true;
+    setIsSearchingPickup(true);
     const timer = setTimeout(async () => {
       try {
         const res = await searchLocations(pickupQuery);
-        setPickupSuggestions(res);
+        if (active) setPickupSuggestions(res);
       } catch {
-        setPickupSuggestions([]);
+        if (active) setPickupSuggestions([]);
+      } finally {
+        if (active) setIsSearchingPickup(false);
       }
-    }, 180);
-    return () => clearTimeout(timer);
+    }, 200);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [pickupQuery, activeField]);
 
   useEffect(() => {
     if (activeField !== 'drop') return;
+    let active = true;
+    setIsSearchingDrop(true);
     const timer = setTimeout(async () => {
       try {
         const res = await searchLocations(dropQuery);
-        setDropSuggestions(res);
+        if (active) setDropSuggestions(res);
       } catch {
-        setDropSuggestions([]);
+        if (active) setDropSuggestions([]);
+      } finally {
+        if (active) setIsSearchingDrop(false);
       }
-    }, 180);
-    return () => clearTimeout(timer);
+    }, 200);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [dropQuery, activeField]);
 
-  const handleUseCurrentLocation = async () => {
-    setGeoError(null);
-    setGeoSuccess(null);
+  const handleUseCurrentLocation = useCallback(async (isSilentAuto = false) => {
+    if (!isSilentAuto) {
+      setGeoError(null);
+      setGeoSuccess(null);
+    }
 
     if (typeof window !== 'undefined' && !window.isSecureContext) {
-      setGeoError(
-        'Current location detection requires an HTTPS connection. Please search and select your pickup location manually.'
-      );
+      if (!isSilentAuto) {
+        setGeoError(
+          'Current location detection requires an HTTPS connection. Please search any Indian city or address manually.'
+        );
+      }
       return;
     }
 
     if (!('geolocation' in navigator) || !navigator.geolocation) {
-      setGeoError(
-        'Geolocation is not supported by this browser. Please search and select your pickup location below.'
-      );
+      if (!isSilentAuto) {
+        setGeoError(
+          'Geolocation is not supported by this browser. Please search your Indian pickup city or landmark below.'
+        );
+      }
       return;
     }
 
@@ -139,7 +192,6 @@ export function LocationSearchPanel({
     let position: GeolocationPosition | null = null;
 
     try {
-      // Attempt 1: High-accuracy GPS fix
       position = await requestPosition({
         enableHighAccuracy: true,
         timeout: 12000,
@@ -148,16 +200,16 @@ export function LocationSearchPanel({
     } catch (firstErr) {
       const geoErr = firstErr as GeolocationPositionError;
       if (geoErr?.code === 1) {
-        // PERMISSION_DENIED — never retry or fake coordinates
         setLocatingGps(false);
         setGeoStatusText('');
-        setGeoError(
-          'Location permission was denied. Allow location access in your browser settings (or Preview permissions), or type your pickup location below.'
-        );
+        if (!isSilentAuto) {
+          setGeoError(
+            'Location permission was denied. Allow location access in your browser settings, or search any Indian city/address manually.'
+          );
+        }
         return;
       }
 
-      // Attempt 2: Retry high-accuracy GPS after brief pause
       try {
         setGeoStatusText('Retrying GPS...');
         await new Promise((r) => setTimeout(r, 400));
@@ -171,13 +223,14 @@ export function LocationSearchPanel({
         if (retryErr?.code === 1) {
           setLocatingGps(false);
           setGeoStatusText('');
-          setGeoError(
-            'Location permission was denied. Please enable browser location access or enter your pickup manually.'
-          );
+          if (!isSilentAuto) {
+            setGeoError(
+              'Location permission was denied. Please enable browser location access or enter your pickup manually.'
+            );
+          }
           return;
         }
 
-        // Attempt 3: Network/Wi-Fi assisted geolocation fallback on devices without GPS chip
         try {
           setGeoStatusText('Using network location...');
           position = await requestPosition({
@@ -189,22 +242,24 @@ export function LocationSearchPanel({
           const err = finalErr as GeolocationPositionError;
           setLocatingGps(false);
           setGeoStatusText('');
-          if (err?.code === 1) {
-            setGeoError(
-              'Location permission was denied. Please allow location access in your browser or search manually below.'
-            );
-          } else if (err?.code === 2) {
-            setGeoError(
-              'Location unavailable: your device could not determine a GPS or network position. Please search and select your pickup location manually.'
-            );
-          } else if (err?.code === 3) {
-            setGeoError(
-              'Location detection timed out after retrying. Please retry or search and select your pickup location manually.'
-            );
-          } else {
-            setGeoError(
-              'Unable to detect current location. Please search and select your pickup location manually.'
-            );
+          if (!isSilentAuto) {
+            if (err?.code === 1) {
+              setGeoError(
+                'Location permission was denied. Please allow location access in your browser or search manually below.'
+              );
+            } else if (err?.code === 2) {
+              setGeoError(
+                'Location unavailable: your device could not determine a GPS or network position. Please search and select your pickup location manually.'
+              );
+            } else if (err?.code === 3) {
+              setGeoError(
+                'Location detection timed out after retrying. Please retry or search and select your pickup location manually.'
+              );
+            } else {
+              setGeoError(
+                'Unable to detect current location. Please search and select your pickup location manually.'
+              );
+            }
           }
           return;
         }
@@ -226,10 +281,9 @@ export function LocationSearchPanel({
       setPickupQuery(resolved.name);
       setActiveField(null);
       setGeoSuccess(
-        `Detected: ${resolved.name} (${latitude.toFixed(4)}, ${longitude.toFixed(4)} · ±${Math.round(accuracy)}m)`
+        `Detected: ${resolved.name} (${resolved.city}${resolved.state ? `, ${resolved.state}` : ''} · ±${Math.round(accuracy)}m)`
       );
     } catch {
-      // If reverse geocoding endpoint fails, still use the real detected GPS coordinates
       const coordFallback: LocationPoint = {
         id: `gps-${Date.now()}`,
         name: `Current Location (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`,
@@ -249,7 +303,30 @@ export function LocationSearchPanel({
       setLocatingGps(false);
       setGeoStatusText('');
     }
-  };
+  }, [onChangePickup]);
+
+  // Automatically detect current location on mount ONLY when browser permission is already granted
+  useEffect(() => {
+    if (autoDetectCheckedRef.current) return;
+    autoDetectCheckedRef.current = true;
+    if (
+      typeof window !== 'undefined' &&
+      window.isSecureContext &&
+      'permissions' in navigator &&
+      navigator.permissions?.query
+    ) {
+      navigator.permissions
+        .query({ name: 'geolocation' })
+        .then((status) => {
+          if (status.state === 'granted') {
+            void handleUseCurrentLocation(true);
+          }
+        })
+        .catch(() => {
+          // Ignore browsers without permissions query support
+        });
+    }
+  }, [handleUseCurrentLocation]);
 
   const handleFocusManualPickup = () => {
     setPickupQuery('');
@@ -270,9 +347,7 @@ export function LocationSearchPanel({
     const matches = await searchLocations(trimmed);
     if (matches.length === 0) return null;
 
-    const exact = matches.find(
-      (m) => m.name.toLowerCase() === trimmed.toLowerCase()
-    );
+    const exact = matches.find((m) => m.name.toLowerCase() === trimmed.toLowerCase());
     return exact ?? matches[0];
   };
 
@@ -298,14 +373,14 @@ export function LocationSearchPanel({
 
       if (!resolvedPickup) {
         setSearchError(
-          `Could not find a location matching "${trimmedPickup}". Please pick a suggestion from the pickup dropdown.`
+          `Could not find an Indian location matching "${trimmedPickup}". Please pick a suggestion from the pickup dropdown.`
         );
         return;
       }
 
       if (!resolvedDrop) {
         setSearchError(
-          `Could not find a location matching "${trimmedDrop}". Please pick a suggestion from the destination dropdown.`
+          `Could not find an Indian location matching "${trimmedDrop}". Please pick a suggestion from the destination dropdown.`
         );
         return;
       }
@@ -314,30 +389,72 @@ export function LocationSearchPanel({
       setDropQuery(resolvedDrop.name);
       onCompare(resolvedPickup, resolvedDrop);
     } catch {
-      setSearchError('Unable to resolve locations right now. Please select from the dropdown suggestions.');
+      setSearchError(
+        'Unable to resolve locations right now. Please select from the dropdown suggestions.'
+      );
     } finally {
       setIsResolvingRoute(false);
     }
   };
 
+  const renderSuggestionMeta = (item: LocationPoint) => {
+    const badge = ZONE_BADGES[item.zoneType];
+    const cityState = item.state && !item.city.includes(item.state)
+      ? `${item.city}, ${item.state}`
+      : item.city;
+
+    return (
+      <div className="ml-3 flex shrink-0 items-center gap-1.5">
+        {badge && (
+          <span
+            className={`hidden sm:inline-block rounded border px-1.5 py-0.5 text-[10px] font-semibold ${badge.classes}`}
+          >
+            {badge.label}
+          </span>
+        )}
+        <span className="max-w-[170px] truncate text-xs text-slate-500">
+          {item.area !== item.city ? `${item.area} · ${cityState}` : cityState}
+        </span>
+      </div>
+    );
+  };
+
   return (
     <section
       ref={containerRef}
-      aria-label="Smart Location Search"
+      aria-label="PAN-India Smart Location Search"
       className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6"
     >
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 text-balance">
-            Compare Ride Estimates &amp; Travel Timing
+            Compare PAN-India Ride Estimates &amp; Travel Timing
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Enter pickup and destination points to compare simulated fares across five Indian mobility platforms.
+            Search metros, Tier 2 &amp; Tier 3 cities, airports, railway stations, and landmarks across India to view locally supported cab providers.
           </p>
         </div>
 
-        {/* Ride Mode (Immediate vs Scheduled) + Demand scenario selectors */}
+        {/* Ride Mode + Women's Safety Mode + Demand scenario selectors */}
         <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={womenSafetyMode}
+            onClick={onToggleWomenSafetyMode}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              womenSafetyMode
+                ? 'border-rose-300 bg-rose-50 text-rose-800 shadow-xs'
+                : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            <ShieldCheck
+              className={`h-3.5 w-3.5 ${womenSafetyMode ? 'text-rose-600' : 'text-slate-500'}`}
+              aria-hidden="true"
+            />
+            <span>Women&apos;s Safety Mode: {womenSafetyMode ? 'On' : 'Off'}</span>
+          </button>
+
           <div
             role="group"
             aria-label="Ride timing mode"
@@ -397,16 +514,19 @@ export function LocationSearchPanel({
       )}
 
       {/* Inputs row */}
-      <form onSubmit={handleCompareSubmit} className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-12 lg:items-end">
+      <form
+        onSubmit={handleCompareSubmit}
+        className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-12 lg:items-end"
+      >
         {/* Pickup Input */}
         <div className="relative lg:col-span-5">
-          <div className="mb-1.5 flex items-center justify-between">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
             <label htmlFor="pickup-input" className="text-xs font-semibold text-slate-700">
-              Pickup Location
+              Pickup Location (India)
             </label>
             <button
               type="button"
-              onClick={handleUseCurrentLocation}
+              onClick={() => void handleUseCurrentLocation(false)}
               disabled={locatingGps}
               className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-700 disabled:opacity-60 whitespace-nowrap"
             >
@@ -435,9 +555,15 @@ export function LocationSearchPanel({
                 setGeoError(null);
                 setSearchError(null);
               }}
-              placeholder="Search pickup hub, area, or airport"
-              className="h-11 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+              placeholder="City, locality, airport, railway station, or landmark"
+              className="h-11 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-8 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
             />
+            {activeField === 'pickup' && isSearchingPickup && (
+              <Loader2
+                className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400"
+                aria-hidden="true"
+              />
+            )}
           </div>
 
           {activeField === 'pickup' && pickupSuggestions.length > 0 && (
@@ -461,9 +587,7 @@ export function LocationSearchPanel({
                     className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50"
                   >
                     <span className="truncate font-medium text-slate-900">{item.name}</span>
-                    <span className="ml-3 shrink-0 text-xs text-slate-500">
-                      {item.area} · {item.city}
-                    </span>
+                    {renderSuggestionMeta(item)}
                   </button>
                 </li>
               ))}
@@ -490,7 +614,7 @@ export function LocationSearchPanel({
         {/* Drop Input */}
         <div className="relative lg:col-span-4">
           <label htmlFor="drop-input" className="mb-1.5 block text-xs font-semibold text-slate-700">
-            Destination
+            Destination (India)
           </label>
           <div className="relative">
             <Navigation
@@ -507,9 +631,15 @@ export function LocationSearchPanel({
                 setActiveField('drop');
                 setSearchError(null);
               }}
-              placeholder="Search drop location or business park"
-              className="h-11 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+              placeholder="Address, station, airport, or Tier 2/3 city"
+              className="h-11 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-8 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
             />
+            {activeField === 'drop' && isSearchingDrop && (
+              <Loader2
+                className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400"
+                aria-hidden="true"
+              />
+            )}
           </div>
 
           {activeField === 'drop' && dropSuggestions.length > 0 && (
@@ -531,9 +661,7 @@ export function LocationSearchPanel({
                     className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50"
                   >
                     <span className="truncate font-medium text-slate-900">{item.name}</span>
-                    <span className="ml-3 shrink-0 text-xs text-slate-500">
-                      {item.area} · {item.city}
-                    </span>
+                    {renderSuggestionMeta(item)}
                   </button>
                 </li>
               ))}
@@ -572,7 +700,7 @@ export function LocationSearchPanel({
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={handleUseCurrentLocation}
+              onClick={() => void handleUseCurrentLocation(false)}
               className="rounded-md border border-amber-300 bg-white px-2.5 py-1 font-semibold text-amber-900 hover:bg-amber-100 whitespace-nowrap"
             >
               Retry GPS
@@ -599,10 +727,9 @@ export function LocationSearchPanel({
         <div className="flex flex-wrap items-center gap-2">
           {presets.length > 0 && (
             <>
-              <span className="text-xs font-medium text-slate-500">Sample Routes:</span>
+              <span className="text-xs font-medium text-slate-500">PAN-India Presets:</span>
               {presets.map((preset) => {
-                const isCurrent =
-                  preset.pickup.id === pickup.id && preset.drop.id === drop.id;
+                const isCurrent = preset.pickup.id === pickup.id && preset.drop.id === drop.id;
                 return (
                   <button
                     key={preset.id}

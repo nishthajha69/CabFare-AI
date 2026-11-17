@@ -83,6 +83,26 @@ function buildAnalyticalFallback(
     alternativePickups,
   } = comparison;
   const cabPool = platformBenchmarks && platformBenchmarks.length > 0 ? platformBenchmarks : fares;
+  if (fares.length === 0 || cabPool.length === 0) {
+    return {
+      action: 'Consider Another Platform',
+      recommendedPlatform: 'Local Taxi Counter',
+      recommendedVehicle: 'Regional / Prepaid Taxi',
+      estimatedFare: 0,
+      potentialSavings: 0,
+      reasoning:
+        comparison.cityProviderContext?.note ||
+        `No supported app-based cab aggregators operate in ${route.pickup.city || route.pickup.area}. Check regional taxi stands or adjust pickup/drop inside a supported Indian city.`,
+      keyFactors: [
+        `Coverage status: ${comparison.cityProviderContext?.serviceStatus ?? 'unsupported'}`,
+        `Road route distance: ${route.roadDistanceKm} km`,
+      ],
+      confidenceLabel: 'Unsupported Location',
+      generatedAt: new Date().toISOString(),
+      source: 'analytical-fallback',
+      notice,
+    };
+  }
   const cheapestOverall = fares[0];
   const cheapestCab = cabPool[0];
   const highestCab = cabPool[cabPool.length - 1];
@@ -179,6 +199,9 @@ export async function generateRideRecommendation(
   comparison: FareComparisonResponse,
   targetFare?: number
 ): Promise<AIRecommendation> {
+  if (!comparison.fares || comparison.fares.length === 0) {
+    return buildAnalyticalFallback(comparison, targetFare);
+  }
   const ai = getGeminiClient();
   if (!ai) {
     return buildAnalyticalFallback(
@@ -237,6 +260,10 @@ export async function generateRideRecommendation(
                 type: Type.STRING,
                 description: 'Name of the recommended cab platform.',
               },
+              recommendedVehicle: {
+                type: Type.STRING,
+                description: 'Exact vehicle option name from the provided fares list (e.g., Uber Go, Ola Mini, Rapido Cab Economy).',
+              },
               estimatedFare: {
                 type: Type.NUMBER,
                 description: 'Estimated fare in INR for the recommended choice.',
@@ -262,6 +289,7 @@ export async function generateRideRecommendation(
             required: [
               'action',
               'recommendedPlatform',
+              'recommendedVehicle',
               'estimatedFare',
               'potentialSavings',
               'reasoning',
@@ -283,11 +311,39 @@ export async function generateRideRecommendation(
         ? (parsed.action as AIActionType)
         : 'Consider Another Platform';
 
+      const matchedFare =
+        comparison.fares.find(
+          (f) =>
+            typeof parsed.recommendedVehicle === 'string' &&
+            f.vehicleType.toLowerCase() === parsed.recommendedVehicle.trim().toLowerCase()
+        ) ||
+        comparison.platformBenchmarks.find(
+          (f) =>
+            typeof parsed.recommendedPlatform === 'string' &&
+            f.platformName.toLowerCase() === parsed.recommendedPlatform.trim().toLowerCase()
+        ) ||
+        comparison.platformBenchmarks[0] ||
+        comparison.fares[0];
+
       return {
         action: normalizedAction,
-        recommendedPlatform: parsed.recommendedPlatform || comparison.summary.cheapestPlatform,
-        estimatedFare: Number(parsed.estimatedFare) || comparison.summary.cheapestFare,
-        potentialSavings: Number(parsed.potentialSavings) || comparison.summary.estimatedSavings,
+        recommendedPlatform:
+          matchedFare?.platformName ||
+          parsed.recommendedPlatform ||
+          comparison.summary.cheapestCabPlatform,
+        recommendedVehicle:
+          matchedFare?.vehicleType ||
+          parsed.recommendedVehicle ||
+          comparison.summary.cheapestCabVehicleType ||
+          comparison.summary.cheapestVehicleType,
+        estimatedFare:
+          Number.isFinite(Number(parsed.estimatedFare)) && Number(parsed.estimatedFare) > 0
+            ? Number(parsed.estimatedFare)
+            : matchedFare?.estimatedFare ?? comparison.summary.cheapestCabFare,
+        potentialSavings:
+          Number.isFinite(Number(parsed.potentialSavings))
+            ? Number(parsed.potentialSavings)
+            : comparison.summary.estimatedSavings,
         reasoning: parsed.reasoning || buildAnalyticalFallback(comparison, targetFare).reasoning,
         keyFactors: Array.isArray(parsed.keyFactors) ? parsed.keyFactors.slice(0, 3) : [],
         confidenceLabel: parsed.confidenceLabel || 'High Confidence',
@@ -343,6 +399,15 @@ function buildChatAnalyticalFallback(
   } = comparison;
 
   const cabPool = platformBenchmarks && platformBenchmarks.length > 0 ? platformBenchmarks : fares;
+  if (fares.length === 0 || cabPool.length === 0) {
+    return {
+      reply:
+        comparison.cityProviderContext?.note ||
+        `No supported app-based cab aggregators operate for ${route.pickup.name} → ${route.drop.name} (${route.roadDistanceKm} km). Try selecting a metro, Tier 2, or Tier 3 city in India.`,
+      source: 'analytical-fallback',
+      notice,
+    };
+  }
   const cheapestCab = cabPool[0];
   const highestCab = cabPool[cabPool.length - 1];
   const cheapestOverall = fares[0];
@@ -367,6 +432,9 @@ function buildChatAnalyticalFallback(
     { key: 'namma yatri', match: 'namma_yatri' },
     { key: 'namma_yatri', match: 'namma_yatri' },
     { key: 'blusmart', match: 'blusmart' },
+    { key: 'goamiles', match: 'goamiles' },
+    { key: 'goa miles', match: 'goamiles' },
+    { key: 'meru', match: 'meru' },
     { key: 'rapido', match: 'rapido' },
     { key: 'uber', match: 'uber' },
     { key: 'ola', match: 'ola' },

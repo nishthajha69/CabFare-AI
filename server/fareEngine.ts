@@ -1,5 +1,6 @@
 import {
   AlternativePickup,
+  CustomPlatformRatesMap,
   DailyTrendPoint,
   FareComparisonResponse,
   FareEstimate,
@@ -7,11 +8,21 @@ import {
   LocationPoint,
   PlatformId,
   RideMode,
+  RideRecommendationHighlight,
   ScenarioMode,
+  SupportedPlatformInfo,
   SurgeAssumptions,
   VehicleCategory,
 } from '../src/types/cabfare.ts';
-import { PLATFORM_FARE_MODELS, PlatformFareModel, VehicleFareTariff } from './fareModels.ts';
+import {
+  buildProviderBookingUrl,
+  getEffectivePlatformModels,
+  getPreBookingDriverProfile,
+  getProviderSafetyCapabilities,
+  PlatformFareModel,
+  resolveCityProviderConfig,
+  VehicleFareTariff,
+} from './fareModels.ts';
 import { analyzeHistoricalForecast } from './historicalDataset.ts';
 import { getRoadRoute } from './routingService.ts';
 
@@ -81,7 +92,7 @@ function getScenarioParameters(
       assumptions?.trafficCongestionFactor ?? (isPeak ? 1.35 : isMid ? 1.15 : 1.0),
     peakSurgeMultiplier,
     offPeakMultiplier,
-    timeWindowLabel: `Live Simulated (${String(currentHour).padStart(2, '0')}:00 Window)`,
+    timeWindowLabel: `Current Window (${String(currentHour).padStart(2, '0')}:00 Estimated)`,
     baseHour: currentHour,
   };
 }
@@ -116,6 +127,7 @@ function computeSurgeMultiplier(
 function isStationOrTransitPickup(pickup: LocationPoint): boolean {
   return (
     pickup.zoneType === 'metro' ||
+    pickup.zoneType === 'railway' ||
     /station|terminal|railway|metro|bus|expressway|junction/i.test(pickup.name)
   );
 }
@@ -248,10 +260,10 @@ function calculateVehicleFare(
 
   const availabilityStatus =
     rideMode === 'scheduled'
-      ? `Scheduled slot · ~${arrivalMinutes} min ETA (${scheduledWaitMinutes}m pickup wait incl.)`
+      ? `Estimated slot · ~${arrivalMinutes}m arrival (${scheduledWaitMinutes}m wait incl.)`
       : isAirportPickup || isStationPickup
-        ? `Immediate dispatch · ~${arrivalMinutes} min ETA (+${immediateStagingDelay}m hub queue)`
-        : `Simulated estimate · ~${arrivalMinutes} min pickup ETA`;
+        ? `Estimated dispatch · ~${arrivalMinutes}m arrival (+${immediateStagingDelay}m hub queue)`
+        : `Estimated availability · ~${arrivalMinutes}m pickup ETA`;
 
   return {
     id: `${model.platformId}-${tariff.category}`,
@@ -279,12 +291,16 @@ function calculateVehicleFare(
     journeyMinutes,
     availabilityStatus,
     availabilitySource: 'simulated',
+    fareQuoteType: 'estimated',
+    bookingUrl: buildProviderBookingUrl(model.platformId, pickup, drop),
     reliabilityScore,
     cancellationRisk,
     isCheapest: false,
     isCheapestInCategory: false,
     pricingModel: model.pricingModel,
     notes: model.notes,
+    driverProfile: getPreBookingDriverProfile(),
+    safetyCapabilities: getProviderSafetyCapabilities(model.platformId),
   };
 }
 
@@ -297,12 +313,14 @@ function getPlatformBenchmarkTariff(model: PlatformFareModel): VehicleFareTariff
 }
 
 function build24HourHistory(
+  models: PlatformFareModel[],
   roadDistanceKm: number,
   baseDurationMin: number,
   pickup: LocationPoint,
   drop: LocationPoint,
   assumptions?: SurgeAssumptions
 ): HistoricalPoint[] {
+  if (models.length === 0) return [];
   const points: HistoricalPoint[] = [];
   for (let hour = 0; hour < 24; hour += 2) {
     const morningPeak = Math.exp(-Math.pow((hour - 9) / 2.2, 2));
@@ -324,13 +342,20 @@ function build24HourHistory(
       baseHour: hour,
     };
 
-    const row: Record<string, number | string> = {
+    const row: HistoricalPoint = {
       timeLabel: `${String(hour).padStart(2, '0')}:00`,
       hour,
+      uber: null,
+      ola: null,
+      rapido: null,
+      blusmart: null,
+      namma_yatri: null,
+      meru: null,
+      goamiles: null,
       demandIndex: Math.round(demandIndex * 100),
     };
 
-    for (const model of PLATFORM_FARE_MODELS) {
+    for (const model of models) {
       const tariff = getPlatformBenchmarkTariff(model);
       const est = calculateVehicleFare(
         model,
@@ -344,18 +369,20 @@ function build24HourHistory(
       row[model.platformId] = est.estimatedFare;
     }
 
-    points.push(row as unknown as HistoricalPoint);
+    points.push(row);
   }
   return points;
 }
 
 function build7DayHistory(
+  models: PlatformFareModel[],
   roadDistanceKm: number,
   baseDurationMin: number,
   pickup: LocationPoint,
   drop: LocationPoint,
   assumptions?: SurgeAssumptions
 ): DailyTrendPoint[] {
+  if (models.length === 0) return [];
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const dayDemands = [0.66, 0.64, 0.7, 0.74, 0.85, 0.52, 0.44];
 
@@ -375,9 +402,17 @@ function build7DayHistory(
       baseHour: 10,
     };
 
-    const faresByProvider: Record<string, number> = {};
+    const faresByProvider: Record<PlatformId, number | null> = {
+      uber: null,
+      ola: null,
+      rapido: null,
+      blusmart: null,
+      namma_yatri: null,
+      meru: null,
+      goamiles: null,
+    };
     let sum = 0;
-    for (const model of PLATFORM_FARE_MODELS) {
+    for (const model of models) {
       const tariff = getPlatformBenchmarkTariff(model);
       const est = calculateVehicleFare(
         model,
@@ -394,12 +429,14 @@ function build7DayHistory(
 
     return {
       dayLabel,
-      averageFare: Math.round(sum / PLATFORM_FARE_MODELS.length),
+      averageFare: models.length > 0 ? Math.round(sum / models.length) : 0,
       uber: faresByProvider.uber,
       ola: faresByProvider.ola,
       rapido: faresByProvider.rapido,
       blusmart: faresByProvider.blusmart,
       namma_yatri: faresByProvider.namma_yatri,
+      meru: faresByProvider.meru,
+      goamiles: faresByProvider.goamiles,
     };
   });
 }
@@ -411,6 +448,7 @@ function buildAlternativePickups(
   bestCabPlatform: string,
   airportPickupFee: number
 ): AlternativePickup[] {
+  if (cheapestCabFare <= 0) return [];
   const isAirport = pickup.zoneType === 'airport';
   const suggestions = [
     {
@@ -475,26 +513,181 @@ function buildAlternativePickups(
   });
 }
 
+function computeRideRecommendations(
+  sortedFares: FareEstimate[],
+  platformBenchmarks: FareEstimate[]
+): FareComparisonResponse['rideRecommendations'] {
+  if (sortedFares.length === 0) {
+    return {
+      cheapest: null,
+      fastest: null,
+      bestValue: null,
+      bestRatedDriver: {
+        type: 'best_rated_driver',
+        title: 'Best Rated Driver',
+        reason: 'No supported cab providers operate at this location.',
+        estimate: null,
+      },
+      bestSafetyInfo: null,
+      bestOverall: null,
+    };
+  }
+
+  const cheapestEst = sortedFares[0];
+  const cheapestCab = platformBenchmarks[0] ?? cheapestEst;
+
+  const fastestEst = [...sortedFares].sort((a, b) => {
+    const totalA = a.arrivalMinutes + a.journeyMinutes;
+    const totalB = b.arrivalMinutes + b.journeyMinutes;
+    if (totalA !== totalB) return totalA - totalB;
+    if (a.arrivalMinutes !== b.arrivalMinutes) return a.arrivalMinutes - b.arrivalMinutes;
+    return a.estimatedFare - b.estimatedFare;
+  })[0];
+
+  const cabPool = sortedFares.filter(
+    (f) => f.category === 'hatchback' || f.category === 'sedan' || f.category === 'ev'
+  );
+  const valuePool = cabPool.length > 0 ? cabPool : sortedFares;
+
+  const minFare = Math.min(...valuePool.map((f) => f.estimatedFare));
+  const maxFare = Math.max(...valuePool.map((f) => f.estimatedFare));
+  const minTime = Math.min(...valuePool.map((f) => f.arrivalMinutes + f.journeyMinutes));
+  const maxTime = Math.max(...valuePool.map((f) => f.arrivalMinutes + f.journeyMinutes));
+
+  const scoredValue = valuePool
+    .map((f) => {
+      const fareNorm = maxFare > minFare ? (f.estimatedFare - minFare) / (maxFare - minFare) : 0;
+      const totalT = f.arrivalMinutes + f.journeyMinutes;
+      const timeNorm = maxTime > minTime ? (totalT - minTime) / (maxTime - minTime) : 0;
+      const relPenalty = (100 - f.reliabilityScore) / 25;
+      const surgePenalty = Math.max(0, f.surgeMultiplier - 1) * 0.25;
+      const score = fareNorm * 0.48 + timeNorm * 0.28 + relPenalty * 0.24 + surgePenalty;
+      return { fare: f, score };
+    })
+    .sort((a, b) => a.score - b.score);
+
+  const bestValueEst = scoredValue[0]?.fare ?? cheapestCab;
+
+  // Best Rated Driver: STRICTLY only when a real driver rating is supplied by an authorised provider API
+  const assignedRatedDrivers = sortedFares
+    .filter(
+      (f) =>
+        f.driverProfile.isDriverAssigned &&
+        typeof f.driverProfile.driverRating === 'number' &&
+        Number.isFinite(f.driverProfile.driverRating)
+    )
+    .sort(
+      (a, b) =>
+        (b.driverProfile.driverRating ?? 0) - (a.driverProfile.driverRating ?? 0) ||
+        (b.driverProfile.completedRides ?? 0) - (a.driverProfile.completedRides ?? 0)
+    );
+
+  const bestRatedDriver: RideRecommendationHighlight =
+    assignedRatedDrivers.length > 0
+      ? {
+          type: 'best_rated_driver',
+          title: 'Best Rated Driver',
+          reason: `${assignedRatedDrivers[0].driverProfile.driverName} (${assignedRatedDrivers[0].driverProfile.driverRating}/5 across ${assignedRatedDrivers[0].driverProfile.completedRides ?? 0} trips). Ratings do not guarantee safety.`,
+          estimate: assignedRatedDrivers[0],
+        }
+      : {
+          type: 'best_rated_driver',
+          title: 'Best Rated Driver',
+          reason:
+            'Driver details will be available after booking — live ratings are only displayed when supplied by an authorised provider API (never fabricated).',
+          estimate: null,
+        };
+
+  // Best Safety Information Available (evaluates verified documented in-app safety tools)
+  const safetyPool = cabPool.length > 0 ? cabPool : sortedFares;
+  const bestSafetyEst = [...safetyPool].sort((a, b) => {
+    const scoreDiff = b.safetyCapabilities.safetyInfoScore - a.safetyCapabilities.safetyInfoScore;
+    if (scoreDiff !== 0) return scoreDiff;
+    const relDiff = b.reliabilityScore - a.reliabilityScore;
+    if (relDiff !== 0) return relDiff;
+    return a.estimatedFare - b.estimatedFare;
+  })[0];
+
+  // Best Overall Choice (balanced fare + documented safety tools + reliability + ETA)
+  const overallScored = safetyPool
+    .map((f) => {
+      const fareNorm = maxFare > minFare ? (f.estimatedFare - minFare) / (maxFare - minFare) : 0;
+      const totalT = f.arrivalMinutes + f.journeyMinutes;
+      const timeNorm = maxTime > minTime ? (totalT - minTime) / (maxTime - minTime) : 0;
+      const relPenalty = (100 - f.reliabilityScore) / 25;
+      const safetyPenalty = (100 - f.safetyCapabilities.safetyInfoScore) / 25;
+      const score = fareNorm * 0.36 + safetyPenalty * 0.3 + relPenalty * 0.2 + timeNorm * 0.14;
+      return { fare: f, score };
+    })
+    .sort((a, b) => a.score - b.score);
+
+  const bestOverallEst = overallScored[0]?.fare ?? bestSafetyEst;
+
+  return {
+    cheapest: {
+      type: 'cheapest',
+      title: 'Cheapest Ride',
+      reason:
+        cheapestEst.id !== cheapestCab.id
+          ? `Lowest estimated fare overall (best cab: ${cheapestCab.vehicleType} at ₹${cheapestCab.estimatedFare})`
+          : `Lowest estimated fare across supported providers at ₹${cheapestEst.perKmRate}/km`,
+      estimate: cheapestEst,
+    },
+    fastest: {
+      type: 'fastest',
+      title: 'Fastest Ride',
+      reason: `Quickest door-to-door (~${fastestEst.arrivalMinutes}m pickup + ${fastestEst.journeyMinutes}m trip)`,
+      estimate: fastestEst,
+    },
+    bestValue: {
+      type: 'best_value',
+      title: 'Best Value Ride',
+      reason: `Optimal balance of ₹${bestValueEst.estimatedFare} fare, ${bestValueEst.arrivalMinutes}m ETA & ${bestValueEst.reliabilityScore}% reliability`,
+      estimate: bestValueEst,
+    },
+    bestRatedDriver,
+    bestSafetyInfo: {
+      type: 'best_safety_info',
+      title: 'Best Safety Information Available',
+      reason: `${bestSafetyEst.platformName} documents ${bestSafetyEst.safetyCapabilities.documentedSafetyFeatures.slice(0, 3).join(', ')} (${bestSafetyEst.safetyCapabilities.safetyInfoScore}/100 info coverage). Tools do not guarantee safety.`,
+      estimate: bestSafetyEst,
+    },
+    bestOverall: {
+      type: 'best_overall',
+      title: 'Best Overall Choice',
+      reason: `Balanced choice combining ₹${bestOverallEst.estimatedFare} fare, ${bestOverallEst.safetyCapabilities.safetyInfoScore}/100 safety tools, and ${bestOverallEst.reliabilityScore}% reliability.`,
+      estimate: bestOverallEst,
+    },
+  };
+}
+
 export async function compareFares(
   pickup: LocationPoint,
   drop: LocationPoint,
   scenario: ScenarioMode = 'live',
   assumptions?: SurgeAssumptions,
-  rideMode: RideMode = 'immediate'
+  rideMode: RideMode = 'immediate',
+  customRates?: CustomPlatformRatesMap
 ): Promise<FareComparisonResponse> {
   const roadRoute = await getRoadRoute(pickup, drop);
   const params = getScenarioParameters(scenario, assumptions);
+
+  const { config: cityConfig, context: cityProviderContext } = resolveCityProviderConfig(
+    pickup,
+    drop
+  );
+  const effectiveModels = getEffectivePlatformModels(cityConfig, customRates);
 
   const estimatedDurationMin = Math.max(
     5,
     Math.round(roadRoute.baseDurationMin * params.trafficCongestionFactor)
   );
 
-  // Calculate all supported (platform × vehicle category) fare estimates
+  // Calculate all supported (city-enabled platform × vehicle category) fare estimates
   const allFares: FareEstimate[] = [];
-  const supportedCategoriesByPlatform = {} as Record<PlatformId, VehicleCategory[]>;
+  const supportedCategoriesByPlatform: Partial<Record<PlatformId, VehicleCategory[]>> = {};
 
-  for (const model of PLATFORM_FARE_MODELS) {
+  for (const model of effectiveModels) {
     supportedCategoriesByPlatform[model.platformId] = model.vehicles.map((v) => v.category);
     for (const tariff of model.vehicles) {
       allFares.push(
@@ -527,25 +720,35 @@ export async function compareFares(
     }
   }
 
-  // Representative 4-wheeler benchmark per platform (Hatchback or EV) for apples-to-apples 5-platform analytics
-  const platformBenchmarks: FareEstimate[] = PLATFORM_FARE_MODELS.map((model) => {
-    const benchmarkTariff = getPlatformBenchmarkTariff(model);
-    return (
-      sortedFares.find(
-        (f) => f.platformId === model.platformId && f.category === benchmarkTariff.category
-      ) || sortedFares.find((f) => f.platformId === model.platformId)!
-    );
-  }).sort((a, b) => a.estimatedFare - b.estimatedFare);
+  // Representative 4-wheeler benchmark per supported platform
+  const platformBenchmarks: FareEstimate[] = effectiveModels
+    .map((model) => {
+      const benchmarkTariff = getPlatformBenchmarkTariff(model);
+      return (
+        sortedFares.find(
+          (f) => f.platformId === model.platformId && f.category === benchmarkTariff.category
+        ) || sortedFares.find((f) => f.platformId === model.platformId)!
+      );
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.estimatedFare - b.estimatedFare);
 
   const cheapestOverall = sortedFares[0];
-  const cheapestCab = platformBenchmarks[0];
-  const highestCab = platformBenchmarks[platformBenchmarks.length - 1];
-  const averageCabFare = Math.round(
-    platformBenchmarks.reduce((acc, f) => acc + f.estimatedFare, 0) / platformBenchmarks.length
-  );
-  const estimatedSavings = highestCab.estimatedFare - cheapestCab.estimatedFare;
+  const cheapestCab = platformBenchmarks[0] ?? cheapestOverall;
+  const highestCab = platformBenchmarks[platformBenchmarks.length - 1] ?? cheapestCab;
+  const averageCabFare =
+    platformBenchmarks.length > 0
+      ? Math.round(
+          platformBenchmarks.reduce((acc, f) => acc + f.estimatedFare, 0) /
+            platformBenchmarks.length
+        )
+      : 0;
+  const estimatedSavings =
+    highestCab && cheapestCab
+      ? Math.max(0, highestCab.estimatedFare - cheapestCab.estimatedFare)
+      : 0;
   const savingsPercent =
-    highestCab.estimatedFare > 0
+    highestCab && highestCab.estimatedFare > 0
       ? Math.round((estimatedSavings / highestCab.estimatedFare) * 100)
       : 0;
 
@@ -556,6 +759,23 @@ export async function compareFares(
     params.demandFactor,
     params.baseHour
   );
+
+  const supportedPlatforms: SupportedPlatformInfo[] = effectiveModels.map((m) => ({
+    id: m.platformId,
+    name: m.platformName,
+    confirmedForCity: cityProviderContext.isConfirmedCity,
+    pricingModel: m.pricingModel,
+    notes: m.notes,
+  }));
+
+  const rideRecommendations = computeRideRecommendations(sortedFares, platformBenchmarks);
+
+  const intercityWarning =
+    roadRoute.roadDistanceKm > 250
+      ? `Long intercity distance (${roadRoute.roadDistanceKm} km): intracity cab tariffs shown here are indicative only; outstation or intercity operator quotes apply.`
+      : undefined;
+
+  const combinedWarning = [roadRoute.routeWarning, intercityWarning].filter(Boolean).join(' · ') || undefined;
 
   return {
     route: {
@@ -580,21 +800,41 @@ export async function compareFares(
     },
     fares: sortedFares,
     platformBenchmarks,
+    supportedPlatforms,
+    cityProviderContext,
     supportedCategoriesByPlatform,
-    summary: {
-      cheapestPlatform: cheapestOverall.platformName,
-      cheapestPlatformId: cheapestOverall.platformId,
-      cheapestVehicleType: cheapestOverall.vehicleType,
-      cheapestFare: cheapestOverall.estimatedFare,
-      cheapestCabPlatform: cheapestCab.platformName,
-      cheapestCabFare: cheapestCab.estimatedFare,
-      averageFare: averageCabFare,
-      highestPlatform: highestCab.platformName,
-      highestFare: highestCab.estimatedFare,
-      estimatedSavings,
-      savingsPercent,
-    },
+    rideRecommendations,
+    summary: cheapestOverall
+      ? {
+          cheapestPlatform: cheapestOverall.platformName,
+          cheapestPlatformId: cheapestOverall.platformId,
+          cheapestVehicleType: cheapestOverall.vehicleType,
+          cheapestFare: cheapestOverall.estimatedFare,
+          cheapestCabPlatform: cheapestCab.platformName,
+          cheapestCabVehicleType: cheapestCab.vehicleType,
+          cheapestCabFare: cheapestCab.estimatedFare,
+          averageFare: averageCabFare,
+          highestPlatform: highestCab.platformName,
+          highestFare: highestCab.estimatedFare,
+          estimatedSavings,
+          savingsPercent,
+        }
+      : {
+          cheapestPlatform: 'Unavailable',
+          cheapestPlatformId: 'ola',
+          cheapestVehicleType: 'No supported service',
+          cheapestFare: 0,
+          cheapestCabPlatform: 'Unavailable',
+          cheapestCabVehicleType: 'No supported cab',
+          cheapestCabFare: 0,
+          averageFare: 0,
+          highestPlatform: 'Unavailable',
+          highestFare: 0,
+          estimatedSavings: 0,
+          savingsPercent: 0,
+        },
     priceHistory24h: build24HourHistory(
+      effectiveModels,
       roadRoute.roadDistanceKm,
       roadRoute.baseDurationMin,
       pickup,
@@ -602,6 +842,7 @@ export async function compareFares(
       assumptions
     ),
     priceHistory7d: build7DayHistory(
+      effectiveModels,
       roadRoute.roadDistanceKm,
       roadRoute.baseDurationMin,
       pickup,
@@ -610,14 +851,19 @@ export async function compareFares(
     ),
     farePredictions,
     predictionMeta,
-    alternativePickups: buildAlternativePickups(
-      pickup,
-      cheapestCab.estimatedFare,
-      cheapestCab.platformName,
-      PLATFORM_FARE_MODELS.find((m) => m.platformId === cheapestCab.platformId)
-        ?.airportPickupFee ?? 0
-    ),
+    alternativePickups:
+      cheapestCab && sortedFares.length > 0
+        ? buildAlternativePickups(
+            pickup,
+            cheapestCab.estimatedFare,
+            cheapestCab.platformName,
+            effectiveModels.find((m) => m.platformId === cheapestCab.platformId)?.airportPickupFee ?? 0
+          )
+        : [],
     simulatedNotice:
-      'Simulated fare & availability estimates calculated from road route distance, duration, and platform tariff models — not live Uber, Ola, Rapido, BluSmart, or Namma Yatri API quotes.',
+      sortedFares.length > 0
+        ? 'Estimated fares modeled from road route distance, travel time, and configurable city tariffs — not verified live provider API quotes.'
+        : cityProviderContext.note,
+    routeWarning: combinedWarning,
   };
 }

@@ -44,6 +44,13 @@ function buildClientNetworkFallback(
   const p10 = farePredictions.find((p) => p.minutesAhead === 10);
   const p30 = farePredictions.find((p) => p.minutesAhead === 30);
 
+  if (comparison.fares.length === 0) {
+    return (
+      `Showing offline summary for **${route.pickup.area} → ${route.drop.area}** (${route.roadDistanceKm} km): ` +
+      (comparison.cityProviderContext?.note ??
+        'No configured cab providers are active for this region yet. Use local transit or check nearby metro hubs.')
+    );
+  }
   return (
     `Showing offline summary from your loaded route data for **${route.pickup.area} → ${route.drop.area}** (${route.roadDistanceKm} km, ~${route.estimatedDurationMin} min): ` +
     `cheapest cab is **${summary.cheapestCabPlatform}** at **₹${summary.cheapestCabFare}** (saving **₹${summary.estimatedSavings}** vs ${summary.highestPlatform} at ₹${summary.highestFare}). ` +
@@ -203,7 +210,9 @@ export function AIAssistantDrawer({
             <div>
               <span className="block text-slate-500">Cheapest Cab</span>
               <span className="font-semibold text-emerald-700">
-                {comparison.summary.cheapestCabPlatform} · ₹{comparison.summary.cheapestCabFare}
+                {comparison.fares.length > 0
+                  ? `${comparison.summary.cheapestCabPlatform} · ₹${comparison.summary.cheapestCabFare}`
+                  : 'No active service'}
               </span>
             </div>
             <div>
@@ -215,7 +224,9 @@ export function AIAssistantDrawer({
             <div>
               <span className="block text-slate-500">Max Savings</span>
               <span className="font-mono font-semibold text-slate-900">
-                ₹{comparison.summary.estimatedSavings} ({comparison.summary.savingsPercent}%)
+                {comparison.fares.length > 0
+                  ? `₹${comparison.summary.estimatedSavings} (${comparison.summary.savingsPercent}%)`
+                  : '—'}
               </span>
             </div>
           </div>

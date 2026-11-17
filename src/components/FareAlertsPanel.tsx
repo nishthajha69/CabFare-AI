@@ -59,15 +59,6 @@ interface FareAlertsPanelProps {
   onLoadAlertRoute: (pickup: LocationPoint, drop: LocationPoint) => void;
 }
 
-const PLATFORM_OPTIONS: Array<{ id: 'any' | PlatformId; label: string }> = [
-  { id: 'any', label: 'Any Platform (Best Fare)' },
-  { id: 'uber', label: 'Uber' },
-  { id: 'ola', label: 'Ola' },
-  { id: 'rapido', label: 'Rapido' },
-  { id: 'blusmart', label: 'BluSmart' },
-  { id: 'namma_yatri', label: 'Namma Yatri' },
-];
-
 const CATEGORY_OPTIONS: Array<{ id: 'any' | VehicleCategory; label: string }> = [
   { id: 'any', label: 'Any Vehicle Category' },
   { id: 'bike', label: 'Bike' },
@@ -108,13 +99,41 @@ export function FareAlertsPanel({
   const [selectedDropId, setSelectedDropId] = useState<string>(comparison.route.drop.id);
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Sync form pickup/drop to active route when not actively editing a saved alert
+  const platformOptions = useMemo<Array<{ id: 'any' | PlatformId; label: string }>>(() => {
+    const supported = comparison.supportedPlatforms ?? [];
+    if (supported.length === 0) {
+      return [
+        { id: 'any', label: 'Any Platform (Best Fare)' },
+        { id: 'uber', label: 'Uber' },
+        { id: 'ola', label: 'Ola' },
+        { id: 'rapido', label: 'Rapido' },
+      ];
+    }
+    return [
+      { id: 'any', label: 'Any Platform (Best Fare)' },
+      ...supported.map((p) => ({ id: p.id, label: p.name })),
+    ];
+  }, [comparison.supportedPlatforms]);
+
+  // Sync form pickup/drop and platform to active route when not actively editing a saved alert
   useEffect(() => {
     if (!editingAlertId) {
       setSelectedPickupId(comparison.route.pickup.id);
       setSelectedDropId(comparison.route.drop.id);
+      if (
+        preferredPlatform !== 'any' &&
+        !platformOptions.some((p) => p.id === preferredPlatform)
+      ) {
+        setPreferredPlatform('any');
+      }
     }
-  }, [comparison.route.pickup.id, comparison.route.drop.id, editingAlertId]);
+  }, [
+    comparison.route.pickup.id,
+    comparison.route.drop.id,
+    editingAlertId,
+    preferredPlatform,
+    platformOptions,
+  ]);
 
   const locationChoices = useMemo(() => {
     const map = new Map<string, LocationPoint>();
@@ -510,7 +529,7 @@ export function FareAlertsPanel({
               onChange={(e) => setPreferredPlatform(e.target.value as 'any' | PlatformId)}
               className="h-10 w-full rounded-lg border border-slate-300 bg-white px-2.5 text-xs text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
             >
-              {PLATFORM_OPTIONS.map((p) => (
+              {platformOptions.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.label}
                 </option>

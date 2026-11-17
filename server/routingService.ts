@@ -7,6 +7,7 @@ export interface RoadRouteResult {
   baseDurationMin: number;
   routeGeometry: [number, number][];
   distanceSource: 'osrm-road-network' | 'road-detour-estimate';
+  routeWarning?: string;
 }
 
 const routeCache = new Map<string, RoadRouteResult>();
@@ -114,5 +115,7 @@ export async function getRoadRoute(
       [drop.lat, drop.lng],
     ],
     distanceSource: 'road-detour-estimate',
+    routeWarning:
+      'Live OSRM road routing was unavailable; using straight-line road detour estimate for fare calculation.',
   };
 }

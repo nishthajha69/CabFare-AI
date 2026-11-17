@@ -4,10 +4,12 @@ import { AIRecommendationCard } from './components/AIRecommendationCard';
 import { AlternativePickups } from './components/AlternativePickups';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
 import { AlertFormPayload, FareAlertsPanel } from './components/FareAlertsPanel';
+import { DriverProfileModal } from './components/DriverProfileModal';
 import { FareComparisonGrid } from './components/FareComparisonGrid';
 import { Header, WorkspaceTab } from './components/Header';
 import { LocationSearchPanel } from './components/LocationSearchPanel';
 import { RouteMap } from './components/RouteMap';
+import { SafeRideDashboard } from './components/SafeRideDashboard';
 import { TrendsAndPredictions } from './components/TrendsAndPredictions';
 import { WaitingTimeAnalysis } from './components/WaitingTimeAnalysis';
 import {
@@ -20,6 +22,8 @@ import {
   AlertNotification,
   AlertWorkflowSummary,
   AlternativePickup,
+  CustomPlatformRatesMap,
+  EmergencyContact,
   FareAlert,
   FareComparisonResponse,
   FareEstimate,
@@ -27,6 +31,7 @@ import {
   RideMode,
   RoutePreset,
   ScenarioMode,
+  SosDispatchLog,
   SurgeAssumptions,
 } from './types/cabfare';
 import {
@@ -42,6 +47,16 @@ import {
   saveSoundPreference,
   VEHICLE_CATEGORY_LABELS,
 } from './utils/fareAlertWorkflow';
+import {
+  loadEmergencyContacts,
+  loadPreferFemaleDriver,
+  loadSosDispatchLogs,
+  loadWomenSafetyMode,
+  saveEmergencyContacts,
+  savePreferFemaleDriver,
+  saveSosDispatchLogs,
+  saveWomenSafetyMode,
+} from './utils/safeRideStorage';
 
 const DEFAULT_PICKUP: LocationPoint = {
   id: 'blr-indiranagar',
@@ -100,11 +115,43 @@ export default function App() {
   const [soundEnabled, setSoundEnabled] = useState<boolean>(() => loadSoundPreference());
   const [isCheckingAllAlerts, setIsCheckingAllAlerts] = useState<boolean>(false);
   const [isAssistantOpen, setIsAssistantOpen] = useState<boolean>(false);
+  const [customRates, setCustomRates] = useState<CustomPlatformRatesMap>({});
+  const [womenSafetyMode, setWomenSafetyMode] = useState<boolean>(() => loadWomenSafetyMode());
+  const [femaleDriverOnly, setFemaleDriverOnly] = useState<boolean>(() => loadPreferFemaleDriver());
+  const [emergencyContacts, setEmergencyContacts] = useState<EmergencyContact[]>(() =>
+    loadEmergencyContacts()
+  );
+  const [sosLogs, setSosLogs] = useState<SosDispatchLog[]>(() => loadSosDispatchLogs());
+  const [driverProfileModal, setDriverProfileModal] = useState<{
+    fare: FareEstimate;
+    demoPreview: boolean;
+  } | null>(null);
 
   const compareSeqRef = useRef(0);
   const aiSeqRef = useRef(0);
   const alertsRef = useRef<FareAlert[]>(alerts);
   const soundEnabledRef = useRef<boolean>(soundEnabled);
+  const customRatesRef = useRef<CustomPlatformRatesMap>(customRates);
+
+  useEffect(() => {
+    saveWomenSafetyMode(womenSafetyMode);
+  }, [womenSafetyMode]);
+
+  useEffect(() => {
+    savePreferFemaleDriver(femaleDriverOnly);
+  }, [femaleDriverOnly]);
+
+  useEffect(() => {
+    saveEmergencyContacts(emergencyContacts);
+  }, [emergencyContacts]);
+
+  useEffect(() => {
+    saveSosDispatchLogs(sosLogs);
+  }, [sosLogs]);
+
+  useEffect(() => {
+    customRatesRef.current = customRates;
+  }, [customRates]);
 
   useEffect(() => {
     alertsRef.current = alerts;
@@ -173,7 +220,8 @@ export default function App() {
       nextScenario: ScenarioMode,
       nextAssumptions: SurgeAssumptions,
       budget?: number,
-      nextRideMode: RideMode = 'immediate'
+      nextRideMode: RideMode = 'immediate',
+      nextCustomRates: CustomPlatformRatesMap = customRatesRef.current
     ) => {
       const compareReqId = ++compareSeqRef.current;
       setIsComparing(true);
@@ -186,7 +234,8 @@ export default function App() {
           nextDrop,
           nextScenario,
           nextAssumptions,
-          nextRideMode
+          nextRideMode,
+          nextCustomRates
         );
         if (compareReqId !== compareSeqRef.current) return;
         setComparison(data);
@@ -292,6 +341,20 @@ export default function App() {
     });
   };
 
+  const handleCustomRatesChange = (nextRates: CustomPlatformRatesMap) => {
+    customRatesRef.current = nextRates;
+    setCustomRates(nextRates);
+    void runComparison(
+      pickup,
+      drop,
+      scenario,
+      surgeAssumptions,
+      targetFare,
+      rideMode,
+      nextRates
+    );
+  };
+
   const evaluateSingleAlertOffRoute = async (alert: FareAlert) => {
     try {
       const data = await fetchFareComparison(
@@ -299,7 +362,8 @@ export default function App() {
         alert.drop,
         scenario,
         surgeAssumptions,
-        rideMode
+        rideMode,
+        customRatesRef.current
       );
       executeAlertWorkflow(data, alertsRef.current, new Set([alert.id]));
     } catch {
@@ -424,7 +488,8 @@ export default function App() {
           a.drop,
           scenario,
           surgeAssumptions,
-          rideMode
+          rideMode,
+          customRatesRef.current
         );
         executeAlertWorkflow(data, alertsRef.current);
       }
@@ -444,6 +509,42 @@ export default function App() {
     setSelectedEstimateId(fare.id);
   };
 
+  const handleAddEmergencyContact = (contact: Omit<EmergencyContact, 'id'>) => {
+    const newContact: EmergencyContact = {
+      ...contact,
+      id: `ec-${Date.now()}`,
+    };
+    setEmergencyContacts((prev) => [...prev, newContact]);
+  };
+
+  const handleDeleteEmergencyContact = (id: string) => {
+    setEmergencyContacts((prev) => {
+      const filtered = prev.filter((c) => c.id !== id);
+      if (filtered.length > 0 && !filtered.some((c) => c.isPrimary)) {
+        filtered[0] = { ...filtered[0], isPrimary: true };
+      }
+      return filtered;
+    });
+  };
+
+  const handleSetPrimaryContact = (id: string) => {
+    setEmergencyContacts((prev) =>
+      prev.map((c) => ({
+        ...c,
+        isPrimary: c.id === id,
+      }))
+    );
+  };
+
+  const handleLogSosAction = (log: Omit<SosDispatchLog, 'id' | 'triggeredAt'>) => {
+    const entry: SosDispatchLog = {
+      ...log,
+      id: `sos-${Date.now()}`,
+      triggeredAt: new Date().toISOString(),
+    };
+    setSosLogs((prev) => [entry, ...prev].slice(0, 20));
+  };
+
   const triggeredAlertCount = alerts.filter((a) => !a.isPaused && a.status === 'triggered').length;
 
   return (
@@ -453,6 +554,7 @@ export default function App() {
         onSelectTab={setActiveTab}
         onOpenAssistant={() => setIsAssistantOpen(true)}
         triggeredAlertCount={triggeredAlertCount}
+        womenSafetyMode={womenSafetyMode}
       />
 
       <main className="mx-auto w-full max-w-[1440px] flex-1 space-y-6 px-4 py-6 sm:px-6 lg:px-8">
@@ -465,6 +567,8 @@ export default function App() {
           surgeAssumptions={surgeAssumptions}
           presets={presets}
           isLoading={isComparing}
+          womenSafetyMode={womenSafetyMode}
+          onToggleWomenSafetyMode={() => setWomenSafetyMode((v) => !v)}
           onChangePickup={(loc) => {
             setPickup(loc);
             void runComparison(loc, drop, scenario, surgeAssumptions, targetFare, rideMode);
@@ -490,7 +594,14 @@ export default function App() {
             role="alert"
             className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
           >
-            <span>{compareError}</span>
+            <div>
+              <p className="font-semibold">{compareError}</p>
+              {comparison && (
+                <p className="mt-0.5 text-xs text-red-600">
+                  Displaying the previous route comparison ({comparison.route.pickup.name} → {comparison.route.drop.name}) until this route succeeds.
+                </p>
+              )}
+            </div>
             <button
               type="button"
               onClick={() =>
@@ -500,7 +611,8 @@ export default function App() {
                   scenario,
                   surgeAssumptions,
                   targetFare,
-                  rideMode
+                  rideMode,
+                  customRates
                 )
               }
               className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-100 whitespace-nowrap"
@@ -529,24 +641,28 @@ export default function App() {
                   className="grid grid-cols-2 gap-4 lg:grid-cols-4"
                 >
                   <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <span className="text-xs font-medium text-slate-500">Cheapest Cab Platform</span>
+                    <span className="text-xs font-medium text-slate-500">Cheapest Cab (Estimated)</span>
                     <div className="mt-1.5 flex items-baseline justify-between gap-2">
-                      <span className="font-display text-lg font-bold text-emerald-700">
-                        {comparison.summary.cheapestCabPlatform}
+                      <span className="font-display text-lg font-bold text-emerald-700 truncate">
+                        {comparison.fares.length > 0
+                          ? comparison.summary.cheapestCabVehicleType || comparison.summary.cheapestCabPlatform
+                          : 'Unavailable'}
                       </span>
-                      <span className="font-mono text-lg font-bold text-slate-900 tabular-nums">
-                        ₹{comparison.summary.cheapestCabFare}
+                      <span className="font-mono text-lg font-bold text-slate-900 tabular-nums shrink-0">
+                        {comparison.fares.length > 0 ? `₹${comparison.summary.cheapestCabFare}` : '—'}
                       </span>
                     </div>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      Lowest mode: {comparison.summary.cheapestVehicleType} (₹{comparison.summary.cheapestFare})
+                      {comparison.fares.length > 0
+                        ? `Lowest mode: ${comparison.summary.cheapestVehicleType} (₹${comparison.summary.cheapestFare})`
+                        : comparison.cityProviderContext.cityName}
                     </p>
                   </div>
 
                   <div className="rounded-xl border border-slate-200 bg-white p-4">
                     <span className="text-xs font-medium text-slate-500">Average Cab Fare</span>
                     <div className="mt-1.5 font-mono text-lg font-bold text-slate-900 tabular-nums">
-                      ₹{comparison.summary.averageFare}
+                      {comparison.fares.length > 0 ? `₹${comparison.summary.averageFare}` : '—'}
                     </div>
                     <p className="mt-1 text-[11px] text-slate-500 tabular-nums">
                       {comparison.route.roadDistanceKm} km road route · {comparison.route.estimatedDurationMin} min
@@ -557,10 +673,10 @@ export default function App() {
                     <span className="text-xs font-medium text-slate-500">Highest Cab Fare</span>
                     <div className="mt-1.5 flex items-baseline justify-between gap-2">
                       <span className="font-mono text-lg font-bold text-slate-900 tabular-nums">
-                        ₹{comparison.summary.highestFare}
+                        {comparison.fares.length > 0 ? `₹${comparison.summary.highestFare}` : '—'}
                       </span>
                       <span className="text-xs text-slate-500">
-                        {comparison.summary.highestPlatform}
+                        {comparison.fares.length > 0 ? comparison.summary.highestPlatform : 'N/A'}
                       </span>
                     </div>
                     <p className="mt-1 text-[11px] text-slate-500">
@@ -572,14 +688,14 @@ export default function App() {
                     <span className="text-xs font-medium text-slate-500">Estimated Cab Savings</span>
                     <div className="mt-1.5 flex items-baseline justify-between gap-2">
                       <span className="font-mono text-lg font-bold text-blue-600 tabular-nums">
-                        ₹{comparison.summary.estimatedSavings}
+                        {comparison.fares.length > 0 ? `₹${comparison.summary.estimatedSavings}` : '—'}
                       </span>
                       <span className="font-mono text-xs font-semibold text-emerald-700 tabular-nums">
-                        {comparison.summary.savingsPercent}% saved
+                        {comparison.fares.length > 0 ? `${comparison.summary.savingsPercent}% saved` : '0 providers'}
                       </span>
                     </div>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      Simulated comparison spread
+                      {comparison.fares.length > 0 ? 'Simulated comparison spread' : 'Unsupported coverage area'}
                     </p>
                   </div>
                 </section>
@@ -612,16 +728,31 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Multi-Category Platform Comparison Grid */}
+                {/* Multi-Category Platform & Safety Comparison Grid */}
                 <FareComparisonGrid
                   fares={comparison.fares}
+                  platformBenchmarks={comparison.platformBenchmarks}
+                  supportedPlatforms={comparison.supportedPlatforms}
+                  cityProviderContext={comparison.cityProviderContext}
+                  rideRecommendations={comparison.rideRecommendations}
+                  customRates={customRates}
+                  onChangeCustomRates={handleCustomRatesChange}
                   simulatedNotice={comparison.simulatedNotice}
+                  routeWarning={comparison.routeWarning}
                   roadDistanceKm={comparison.route.roadDistanceKm}
                   straightLineKm={comparison.route.straightLineKm}
                   distanceSource={comparison.route.distanceSource}
                   selectedEstimateId={selectedEstimateId}
                   onSelectEstimate={handleSelectEstimate}
                   targetFare={targetFare}
+                  womenSafetyMode={womenSafetyMode}
+                  onToggleWomenSafetyMode={() => setWomenSafetyMode((v) => !v)}
+                  femaleDriverOnly={femaleDriverOnly}
+                  onToggleFemaleDriverOnly={() => setFemaleDriverOnly((v) => !v)}
+                  onOpenSafeRide={() => setActiveTab('saferide')}
+                  onViewDriverProfile={(fare) =>
+                    setDriverProfileModal({ fare, demoPreview: false })
+                  }
                 />
 
                 {/* Waiting-Time Cost Analysis */}
@@ -666,6 +797,28 @@ export default function App() {
               </div>
             )}
 
+            {activeTab === 'saferide' && (
+              <SafeRideDashboard
+                comparison={comparison}
+                selectedEstimateId={selectedEstimateId}
+                onSelectEstimate={handleSelectEstimate}
+                womenSafetyMode={womenSafetyMode}
+                onToggleWomenSafetyMode={() => setWomenSafetyMode((v) => !v)}
+                femaleDriverOnly={femaleDriverOnly}
+                onToggleFemaleDriverOnly={() => setFemaleDriverOnly((v) => !v)}
+                emergencyContacts={emergencyContacts}
+                onAddEmergencyContact={handleAddEmergencyContact}
+                onDeleteEmergencyContact={handleDeleteEmergencyContact}
+                onSetPrimaryContact={handleSetPrimaryContact}
+                sosLogs={sosLogs}
+                onLogSosAction={handleLogSosAction}
+                onJumpToExplorer={() => setActiveTab('compare')}
+                onViewDriverProfile={(fare, demoPreview = false) =>
+                  setDriverProfileModal({ fare, demoPreview })
+                }
+              />
+            )}
+
             {activeTab === 'analytics' && (
               <div className="space-y-6">
                 <AnalyticsDashboard comparison={comparison} />
@@ -685,6 +838,8 @@ export default function App() {
                 history7d={comparison.priceHistory7d}
                 predictions={comparison.farePredictions}
                 predictionMeta={comparison.predictionMeta}
+                supportedPlatforms={comparison.supportedPlatforms}
+                cityName={comparison.cityProviderContext?.cityName}
                 routeLabel={`${comparison.route.pickup.area} to ${comparison.route.drop.area}`}
                 pickupName={comparison.route.pickup.name}
                 dropName={comparison.route.drop.name}
@@ -749,7 +904,14 @@ export default function App() {
           <p>
             CabFare AI · Simulated fare &amp; availability estimates modeled from road route distances and platform tariffs — not live provider APIs.
           </p>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
+            <button
+              type="button"
+              onClick={() => setActiveTab('saferide')}
+              className="font-medium text-rose-700 hover:text-rose-800"
+            >
+              SafeRide Safety Hub
+            </button>
             <button
               type="button"
               onClick={() => setActiveTab('analytics')}
@@ -782,6 +944,21 @@ export default function App() {
         recommendation={recommendation}
         targetFare={targetFare}
       />
+
+      {comparison && (
+        <DriverProfileModal
+          fare={driverProfileModal?.fare ?? null}
+          pickup={comparison.route.pickup}
+          drop={comparison.route.drop}
+          emergencyContacts={emergencyContacts}
+          onClose={() => setDriverProfileModal(null)}
+          onLogSosAction={handleLogSosAction}
+          onOpenSafeRide={() => setActiveTab('saferide')}
+          initialShowDemoPreview={driverProfileModal?.demoPreview ?? false}
+          preferFemaleDriver={femaleDriverOnly}
+          onTogglePreferFemaleDriver={() => setFemaleDriverOnly((v) => !v)}
+        />
+      )}
     </div>
   );
 }
